@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "metabo-idmapper"
+version = "0.0.1"
+description = "Metabolite name -> input-usable ID (KEGG/HMDB/ChEBI/PubChem + Mouse-GEM MAM) as an MCP tool registry"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "wykim", email = "wykim91@kbsi.re.kr" }]
+
+# The scientific stack is provided by the conda env `cobragem`. Install editable with
+# `pip install -e . --no-deps` so pip does NOT re-resolve the verified env. The list
+# below documents what must be importable; R packages (BridgeDbR/KEGGREST/
+# MetaboAnalystR) are provided by the system R and called out-of-process.
+dependencies = [
+    "mcp>=1.2",
+    "requests",
+    "pandas",
+    "molmass",
+    "cobra>=0.29",
+    "openpyxl",
+    "python-pptx>=0.6",
+    "pillow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+metabo-idmapper = "metabo_idmapper.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["metabo_idmapper*"]
+
+[tool.setuptools.package-data]
+metabo_idmapper = ["rscripts/*.R"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
