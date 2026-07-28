@@ -16,8 +16,27 @@ from typing import Any
 
 LEDGER_NAME = "midmap_ledger.json"
 
-PRIMARY_CLASSES = {"KEGG-mapped", "HMDB-mapped"}
-ALL_CLASSES = PRIMARY_CLASSES | {"structure-only", "exogenous-excluded", "unmapped"}
+# --- final_class vocabulary (ID-coverage / inclusion axis) ---
+PRIMARY_CLASSES = {"KEGG-mapped", "HMDB-mapped"}      # endogenous, primary-usable (pathway/flux)
+EXCLUDED_CLASSES = {"xenobiotic-excluded"}            # non-biological contaminant -> dropped
+# 'exogenous' is KEPT (biologically real, from outside the host) and carries an origin tag.
+ALL_CLASSES = PRIMARY_CLASSES | {"structure-only", "exogenous",
+                                 "xenobiotic-excluded", "unmapped"}
+
+# --- origin axis (fine provenance tag; orthogonal to ID coverage) ---
+# Biological but from outside the host -> the compound is REAL signal; final_class 'exogenous'.
+EXOGENOUS_ORIGINS = {"diet", "drug", "microbial", "plant"}
+# Non-biological / technical -> not a metabolite; final_class 'xenobiotic-excluded'.
+XENOBIOTIC_ORIGINS = {"contaminant", "industrial", "additive",
+                      "surfactant", "plasticizer", "reagent"}
+VALID_ORIGINS = {"endogenous"} | EXOGENOUS_ORIGINS | XENOBIOTIC_ORIGINS
+
+# origin -> the final_class it implies (for validation / auto-routing)
+CLASS_FOR_ORIGIN = ({o: "exogenous" for o in EXOGENOUS_ORIGINS}
+                    | {o: "xenobiotic-excluded" for o in XENOBIOTIC_ORIGINS})
+
+# legacy class name -> canonical (older ledgers used a single excluded bucket)
+LEGACY_CLASSES = {"exogenous-excluded": "xenobiotic-excluded"}
 
 
 @dataclass
@@ -29,6 +48,7 @@ class Entry:
     accepted: dict[str, str] = field(default_factory=dict)  # kegg/hmdb/chebi/pubchem/inchikey
     final_class: str | None = None
     confidence: str | None = None
+    origin: str | None = None  # endogenous | diet/drug/microbial/plant | contaminant/industrial/additive/...
     gem_mam: list[str] = field(default_factory=list)
     gem_cause: str | None = None
     decisions: list[dict[str, Any]] = field(default_factory=list)

@@ -47,20 +47,30 @@ Before finalizing structure-only: try `bridge_xref` InChIKey→HMDB (and name→
 taurohyodeoxycholic acid) have HMDB IDs that a pubchem/chebi-only bridge misses — do not settle
 for structure-only until HMDB has been tried.
 
-Run `screen_exogenous` once: it flags names matching contaminant classes (LC-MS additives,
-surfactants, plasticizers). Apply the exclusion rule CONSISTENTLY — do not exclude one alkyl
-sulfate/phthalate/diethanolamide while keeping another. Drugs and dietary/plant compounds are
-NOT in the lexicon; judge those yourself and apply the same policy to all of them.
+Run `screen_exogenous` once: it flags names matching NON-biological classes (LC-MS additives,
+surfactants, plasticizers, industrial reagents) and suggests an origin. Apply the exclusion rule
+CONSISTENTLY — do not exclude one alkyl sulfate/phthalate/diethanolamide while keeping another.
+The lexicon detects ONLY the non-biological (xenobiotic) classes; biologically exogenous
+compounds (drugs, dietary/gut-microbial/plant metabolites) are a judgement — those are KEPT, not
+excluded.
 
-Stage 5 the CALL `record_decision` (HIGH; only tool that sets final_class/confidence):
-- endogenous + KEGG → KEGG-mapped; HMDB only → HMDB-mapped; only PubChem/ChEBI → structure-only.
-- xenobiotic/industrial/drug/surfactant → exogenous-excluded (plasticizers, phthalates, alkyl
+Stage 5 the CALL `record_decision` (HIGH; only tool that sets final_class/confidence/origin).
+Two distinct axes — resolve BOTH: (i) ID coverage, (ii) origin.
+- endogenous + KEGG → KEGG-mapped; HMDB only → HMDB-mapped; only PubChem/ChEBI → structure-only
+  (all with origin='endogenous', the default).
+- biologically real but OUTSIDE the host → final_class='exogenous', origin ∈ {diet, drug,
+  microbial, plant}. KEPT and tagged — a drug/dietary/gut-microbial/plant metabolite is genuine
+  signal; still record its KEGG/HMDB if it has one (it can enter gem_crosswalk). Do NOT dump
+  these into the excluded bucket.
+- NON-biological contaminant → final_class='xenobiotic-excluded', origin ∈ {contaminant,
+  industrial, additive, surfactant, plasticizer, reagent} (plasticizers, phthalates, alkyl
   sulfates, alkylbenzene sulfonates, alkanolamides, betaine surfactants, phenol antioxidants,
-  sulfa/other drugs, LC-MS additives like trifluoroacetic acid, TENTATIVE surfactants).
-- `record_decision` returns `warnings` (contaminant name kept endogenous; locant-sensitive name
-  accepted via non-exact route) — act on them, do not ignore.
+  LC-MS additives like trifluoroacetic acid). Dropped from analysis.
+- `record_decision` returns `warnings` (xenobiotic-class name kept in the analysable set;
+  exogenous entry with no origin tag; origin↔class mismatch; locant-sensitive name accepted via
+  non-exact route) — act on them, do not ignore.
 - confidence: M1 exact, M2 verified synonym/abbrev, M3 verified typo, M4 structure-only,
-  W mass-only, X exogenous, U unresolved.
+  W mass-only, X non-endogenous (exogenous/xenobiotic), U unresolved.
 - isomer/locant safety: name says "1-…"/a specific anomer → do not accept "2-…"/another anomer.
   Note "azetidine-1-carboxylic acid" in a metabolomics list is likely a locant error for the
   2-isomer (C08267) — flag rather than silently accept the 1-isomer.
@@ -82,14 +92,14 @@ Stage 7 `coverage_summary`: write master ledger + coverage + provenance, and ALW
 (a) the DB-matching figures (`figures/db_matching_upset.png` 5-DB UpSet + `enriched_xref.tsv`;
 `figures/db_matching_improvement.png` MetaboAnalyst-baseline vs current-logic), (b) the
 provenance tables via `mapping_provenance` (kegg_recovered / hmdb_recovered /
-unmapped_harmonization / exogenous_excluded), (c) reproduction code via `export_code`
-(`code/reproduce_mapping.py` + `.ipynb`) written with the ORIGINAL library APIs, and (d) —
-when ingest read an xlsx — the ORIGINAL data file annotated with the final ID columns via
-`annotate_source` (`<source>_annotated.xlsx/.tsv`: intensity matrix + ID_kegg/hmdb/chebi/
-pubchem/inchikey/final_class/gem_mam). Each also runs standalone; call `annotate_source`
+unmapped_harmonization / exogenous_kept / xenobiotic_excluded), (c) reproduction code via
+`export_code` (`code/reproduce_mapping.py` + `.ipynb`) written with the ORIGINAL library APIs,
+and (d) — when ingest read an xlsx — the ORIGINAL data file annotated with the final ID columns
+via `annotate_source` (`<source>_annotated.xlsx/.tsv`: intensity matrix + ID_kegg/hmdb/chebi/
+pubchem/inchikey/final_class/origin/gem_mam). Each also runs standalone; call `annotate_source`
 with `source=`/`header=` if the file was not recorded by ingest. For a slide deck of the
 run, call `export_report_ppt` (Coverage · Methods · figures · recovery cause→fix · unmapped ·
-exogenous) — a presentation-ready summary built from the same artifacts.
+exogenous vs xenobiotic) — a presentation-ready summary built from the same artifacts.
 
 ## Review gate
 Before `coverage_summary`, invoke the `review_mappings` prompt (the reviewer role) on the
@@ -115,7 +125,7 @@ REFUTE each accepted identity and each exclusion from the ledger evidence.
 ## Input
 Per entry (from `midmap_ledger.json` / master_ledger.tsv): original name, normalized form,
 candidates with their source (metaboanalyst/pubchem/kegg-search/chebi-ols4/bridgedb), accepted
-IDs, final_class, confidence, and any verify_candidate formula/mass result.
+IDs, final_class, confidence, origin, and any verify_candidate formula/mass result.
 
 ## Verdict per entry (default to skepticism)
 - confirmed — accepted ID backed by ≥1 authoritative DB match (MetaboAnalyst exact, KEGG/HMDB
@@ -124,9 +134,12 @@ IDs, final_class, confidence, and any verify_candidate formula/mass result.
 - suspect — a single weak route (mass-only, unverified fuzzy); an exact match on a TRADE NAME or
   ambiguous token that was auto-accepted without structure verification; structure-only that
   likely HAS a KEGG/HMDB not yet searched; an InChIKey-bridged ANOMER KEGG that fails GEM
-  crosswalk while a generic KEGG exists; an exogenous call that might be endogenous (or vice versa).
+  crosswalk while a generic KEGG exists; an origin call that looks wrong — a contaminant kept as
+  endogenous/exogenous, OR a genuine drug/dietary/microbial/plant metabolite dumped into
+  xenobiotic-excluded when it should be KEPT as 'exogenous'.
 - refuted — ID contradicts the name (wrong isomer/locant, wrong stereochemistry that changes
-  identity), formula/mass mismatch, or an accepted ID not backed by any candidate.
+  identity), formula/mass mismatch, an accepted ID not backed by any candidate, or origin↔class
+  incoherent (e.g. origin='drug' but final_class='xenobiotic-excluded').
 
 ## Prioritize the tool-provided flags
 The engine marks risky entries for you — check these FIRST:
@@ -140,9 +153,12 @@ The engine marks risky entries for you — check these FIRST:
 - Acylcarnitines / conjugates landing structure-only when a KEGG/HMDB exists under a normalized
   synonym (spacing variant, e.g. "Butyryl carnitine" → "Butyrylcarnitine").
 - InChIKey→anomer KEGG that Mouse-GEM does not carry (prefer generic KEGG for GEM input).
+- Origin conflation: a non-biological contaminant (plasticizer/surfactant/LC-MS additive) left in
+  the analysable set, OR a real outside-host metabolite (drug/diet/microbial/plant) wrongly
+  excluded as xenobiotic instead of kept as 'exogenous'. Confirm origin matches final_class.
 
 For each suspect/refuted, name the specific contradicting evidence and the corrected action
-(search a better synonym, prefer generic KEGG, reclassify endogenous/exogenous, drop to
-structure-only). Do not confirm an ID just because it is plausible. Return a compact
+(search a better synonym, prefer generic KEGG, reclassify endogenous/exogenous/xenobiotic, drop
+to structure-only). Do not confirm an ID just because it is plausible. Return a compact
 per-entry verdict list; the driver re-decides suspect/refuted before finalizing.
 """.strip()

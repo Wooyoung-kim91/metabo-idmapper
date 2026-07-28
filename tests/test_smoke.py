@@ -61,9 +61,43 @@ def test_exclusion_path():
     with tempfile.TemporaryDirectory() as d:
         tools.ingest_names(d, names=["Erucamide"])
         out = tools.record_decision(d, "M0000", rationale="industrial amide",
-                                    final_class="exogenous-excluded")
-        assert out["final_class"] == "exogenous-excluded"
-        assert out["counts"]["exogenous-excluded"] == 1
+                                    final_class="xenobiotic-excluded")
+        assert out["final_class"] == "xenobiotic-excluded"
+        assert out["origin"] == "industrial"          # auto-suggested from the lexicon
+        assert out["counts"]["xenobiotic-excluded"] == 1
+
+
+def test_legacy_exogenous_excluded_alias():
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Di-n-butyl phthalate"])
+        out = tools.record_decision(d, "M0000", rationale="plasticizer",
+                                    final_class="exogenous-excluded")  # legacy name
+        assert out["final_class"] == "xenobiotic-excluded"
+        assert out["origin"] == "plasticizer"
+
+
+def test_exogenous_is_kept_and_tagged():
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Caffeine"])
+        s = __import__("metabo_idmapper.state", fromlist=["Session"]).Session(d)
+        s.entries["M0000"]["candidates"].append({"source": "metaboanalyst", "kegg": "C07481"})
+        s.save()
+        out = tools.record_decision(d, "M0000", rationale="dietary/drug xanthine",
+                                    accepted={"kegg": "C07481"}, final_class="exogenous",
+                                    origin="drug")
+        assert out["final_class"] == "exogenous"       # KEPT, not excluded
+        assert out["origin"] == "drug"
+        assert out["accepted"]["kegg"] == "C07481"     # still carries its ID
+        assert out["counts"]["exogenous"] == 1
+
+
+def test_origin_class_mismatch_warns():
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["SomeCompound"])
+        out = tools.record_decision(d, "M0000", rationale="x",
+                                    final_class="xenobiotic-excluded", origin="drug")
+        # drug is a biological (exogenous) origin -> should not be xenobiotic-excluded
+        assert any("implies final_class 'exogenous'" in w for w in out.get("warnings", []))
 
 
 def test_normalize_keeps_substituent_parens():
@@ -96,7 +130,20 @@ def test_record_decision_warns_on_contaminant_kept_endogenous():
         out = tools.record_decision(d, "M0000", rationale="test",
                                     accepted={"hmdb": "HMDB0014118"})
         assert out["final_class"] == "HMDB-mapped"
-        assert "warnings" in out and any("contaminant" in w for w in out["warnings"])
+        assert "warnings" in out and any("xenobiotic-excluded" in w for w in out["warnings"])
+
+
+def test_harness_audit_origin_coherence():
+    from metabo_idmapper import harness
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["MysteryDietCompound"])
+        s = __import__("metabo_idmapper.state", fromlist=["Session"]).Session(d)
+        # exogenous kept but never tagged with an origin -> governance failure
+        e = s.entries["M0000"]; e["final_class"] = "exogenous"; e["confidence"] = "M4"
+        s.save()
+        by = {c["check"]: c for c in harness.audit(d)["checks"]}
+        assert by["origin_coherence"]["level"] == "fail"
+        assert any("exogenous-untagged" in o for o in by["origin_coherence"]["offenders"])
 
 
 def test_coverage_emits_db_matching_figures():

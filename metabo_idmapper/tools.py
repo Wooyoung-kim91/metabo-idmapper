@@ -19,7 +19,8 @@ from .engine import normalize as _norm
 from .engine import structure as _struct
 from .engine import verify as _verify
 from .engine.rcall import run_r
-from .state import ALL_CLASSES, PRIMARY_CLASSES, Entry, Session
+from .state import (ALL_CLASSES, CLASS_FOR_ORIGIN, EXCLUDED_CLASSES, LEGACY_CLASSES,
+                    PRIMARY_CLASSES, VALID_ORIGINS, Entry, Session)
 
 # BridgeDb system names for the ids we handle.
 _SRC = {"kegg": "KEGG Compound", "hmdb": "HMDB", "chebi": "ChEBI",
@@ -284,9 +285,10 @@ def mass_match_candidates(mz: float, adducts: list[str] | None = None,
 
 # ----------------------------------------------------------------------- the CALL
 def _commit(s: Session, fid: str, accepted: dict, confidence: str,
-            rationale: str, final_class: str | None = None, auto: bool = False) -> str:
-    """Set an entry's accepted ids + final_class + confidence. Derives class from ids
-    if not given. Enforces provenance: every accepted id must appear in a candidate."""
+            rationale: str, final_class: str | None = None, auto: bool = False,
+            origin: str | None = None) -> str:
+    """Set an entry's accepted ids + final_class + confidence (+ origin). Derives class from
+    ids if not given. Enforces provenance: every accepted id must appear in a candidate."""
     e = s.entries[fid]
     accepted = {k: str(v) for k, v in accepted.items() if v}
     if accepted.get("hmdb"):
@@ -311,76 +313,134 @@ def _commit(s: Session, fid: str, accepted: dict, confidence: str,
             final_class = "structure-only"
         else:
             final_class = "unmapped"
+    # a KEPT endogenous mapping with no explicit origin defaults to 'endogenous'
+    if origin is None and final_class in (PRIMARY_CLASSES | {"structure-only"}):
+        origin = "endogenous"
     e["accepted"] = accepted
     e["final_class"] = final_class
     e["confidence"] = confidence
+    e["origin"] = origin
     s.add_decision(fid, "auto_accept" if auto else "accept", rationale,
-                   accepted=accepted, final_class=final_class, confidence=confidence)
+                   accepted=accepted, final_class=final_class, confidence=confidence,
+                   origin=origin)
     return final_class
 
 
 def record_decision(workdir: str, feature_id: str, rationale: str,
                     accepted: dict | None = None, final_class: str | None = None,
-                    confidence: str | None = None) -> dict:
+                    confidence: str | None = None, origin: str | None = None) -> dict:
     """Commit the LLM's identity CALL for one entry — the ONLY tool that sets
-    final_class/confidence. For an exclusion, pass final_class='exogenous-excluded'
-    (or 'unmapped') with accepted={} and a rationale."""
+    final_class/confidence/origin. `origin` is the compound's PROVENANCE and, for non-
+    endogenous compounds, decides the class:
+
+      - BIOLOGICAL but from outside the host -> origin in {diet, drug, microbial, plant};
+        final_class='exogenous' (KEPT + tagged; it is a real signal, may carry KEGG/HMDB IDs).
+      - NON-biological / technical -> origin in {contaminant, industrial, additive, surfactant,
+        plasticizer, reagent}; final_class='xenobiotic-excluded' (dropped from analysis).
+      - host-produced -> origin='endogenous' (default for KEGG/HMDB/structure-only mappings).
+
+    For an exclusion pass final_class='xenobiotic-excluded' (or 'unmapped') with accepted={};
+    origin is auto-suggested from the contaminant lexicon when omitted."""
     s = Session(workdir)
     e = s.get(feature_id)
     if e is None:
         return {"error": f"unknown feature_id {feature_id}"}
+    final_class = LEGACY_CLASSES.get(final_class, final_class)  # accept old 'exogenous-excluded'
     if final_class and final_class not in ALL_CLASSES:
         return {"error": f"final_class must be one of {sorted(ALL_CLASSES)}"}
     accepted = accepted or {}
-    if final_class in {"exogenous-excluded", "unmapped"} and not accepted:
+    warnings = []
+
+    # --- origin: auto-suggest + coherence with the class ---
+    if origin is None and final_class == "xenobiotic-excluded":
+        origin = _lex.xenobiotic_category(e["original_name"]) or "contaminant"
+    if origin is not None and origin not in VALID_ORIGINS:
+        warnings.append(f"origin '{origin}' is not a recognized tag {sorted(VALID_ORIGINS)}.")
+    implied = CLASS_FOR_ORIGIN.get(origin)
+    if implied and final_class and implied != final_class:
+        warnings.append(f"origin '{origin}' implies final_class '{implied}', not "
+                        f"'{final_class}' — exogenous(diet/drug/microbial/plant) is KEPT; "
+                        "xenobiotic(contaminant/industrial/additive/...) is EXCLUDED.")
+
+    # --- terminal classes that carry no accepted IDs (excluded / unmapped) ---
+    if final_class in (EXCLUDED_CLASSES | {"unmapped"}) and not accepted:
         e["final_class"] = final_class
-        e["confidence"] = confidence or ("X" if final_class == "exogenous-excluded" else "U")
-        s.add_decision(feature_id, "exclude", rationale, final_class=final_class)
+        e["confidence"] = confidence or ("X" if final_class in EXCLUDED_CLASSES else "U")
+        e["origin"] = origin
+        s.add_decision(feature_id, "exclude", rationale, final_class=final_class, origin=origin)
         s.save()
-        return {"feature_id": feature_id, "final_class": final_class,
-                "counts": s.class_counts()}
+        out = {"feature_id": feature_id, "final_class": final_class, "origin": origin,
+               "counts": s.class_counts()}
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
+    # --- exogenous kept WITHOUT a resolved DB id (real signal, structure not DB-mapped) ---
+    if final_class == "exogenous" and not accepted:
+        if origin is None:
+            warnings.append("exogenous entry has no origin — tag diet/drug/microbial/plant.")
+        e["final_class"] = "exogenous"
+        e["confidence"] = confidence or "M4"
+        e["origin"] = origin
+        s.add_decision(feature_id, "accept", rationale, final_class="exogenous", origin=origin)
+        s.save()
+        out = {"feature_id": feature_id, "final_class": "exogenous", "origin": origin,
+               "counts": s.class_counts()}
+        if warnings:
+            out["warnings"] = warnings
+        return out
+
+    # --- accept WITH ids (endogenous primary/structure-only, or exogenous carrying an id) ---
     try:
-        fc = _commit(s, feature_id, accepted, confidence or "M2", rationale, final_class)
+        fc = _commit(s, feature_id, accepted, confidence or "M2", rationale, final_class, origin=origin)
     except ValueError as ex:
         return {"error": str(ex)}
-    # Non-blocking warnings for the reasoning layer to reconsider.
-    warnings = []
-    if fc in PRIMARY_CLASSES or fc == "structure-only":
+    if fc in (PRIMARY_CLASSES | {"structure-only", "exogenous"}):
         tags = _lex.xenobiotic_hits(e["original_name"])
-        if tags:
-            warnings.append(f"name matches contaminant class {tags} but kept endogenous — "
-                            "confirm it is a real metabolite, not a xenobiotic/additive.")
+        if tags and fc != "xenobiotic-excluded":
+            warnings.append(f"name matches NON-biological class {tags} but kept as '{fc}' — "
+                            "reconsider final_class='xenobiotic-excluded' (contaminant), not a "
+                            "real/exogenous metabolite.")
+        if fc == "exogenous" and e.get("origin") is None:
+            warnings.append("exogenous entry has no origin — tag diet/drug/microbial/plant.")
         if "has_digit_locant" in e["normalized"].get("flags", []) and (confidence or "M2") != "M1":
             warnings.append("isomer/locant-sensitive name accepted via a non-exact route — "
                             "verify the accepted structure has the SAME locant/anomer.")
     s.save()
     out = {"feature_id": feature_id, "final_class": fc, "accepted": e["accepted"],
-           "confidence": e["confidence"], "counts": s.class_counts()}
+           "confidence": e["confidence"], "origin": e.get("origin"), "counts": s.class_counts()}
     if warnings:
         out["warnings"] = warnings
     return out
 
 
 def screen_exogenous(workdir: str) -> dict:
-    """Deterministic contaminant-class screen (LC-MS additives / surfactants / plasticizers)
-    over all entries. EMITS evidence — the endogenous-vs-xenobiotic CALL stays with the LLM.
-    Surfaces entries currently kept endogenous whose name matches a contaminant class."""
+    """Deterministic NON-biological (xenobiotic) screen: LC-MS additives / surfactants /
+    plasticizers / industrial reagents. EMITS evidence only. This lexicon detects the
+    *xenobiotic → xenobiotic-excluded* classes; it deliberately does NOT flag biologically
+    exogenous compounds (diet/drug/microbial/plant → the KEPT 'exogenous' class) because those
+    require reasoning-layer judgement. Surfaces xenobiotic-class names that are still kept in
+    the analysable set so the driver can reclassify them as xenobiotic-excluded."""
     s = Session(workdir)
-    hits, kept_endogenous = [], []
+    kept = PRIMARY_CLASSES | {"structure-only", "exogenous"}
+    hits, kept_analysable = [], []
     for fid, e in s.entries.items():
         tags = _lex.xenobiotic_hits(e["original_name"])
         if not tags:
             continue
         row = {"feature_id": fid, "name": e["original_name"], "tags": tags,
-               "final_class": e.get("final_class")}
+               "suggested_origin": _lex.xenobiotic_category(e["original_name"]),
+               "final_class": e.get("final_class"), "origin": e.get("origin")}
         hits.append(row)
-        if e.get("final_class") in PRIMARY_CLASSES or e.get("final_class") == "structure-only":
-            kept_endogenous.append(row)
-    return {"n_contaminant_class": len(hits), "contaminant_hits": hits,
-            "kept_endogenous_review": kept_endogenous,
-            "note": "kept_endogenous_review entries look like xenobiotics but are mapped as "
-                    "metabolites — reconsider exogenous-excluded. Drugs/dietary compounds are "
-                    "NOT in this lexicon; judge those yourself."}
+        if e.get("final_class") in kept:
+            kept_analysable.append(row)
+    return {"n_xenobiotic_class": len(hits), "xenobiotic_hits": hits,
+            "kept_analysable_review": kept_analysable,
+            "note": "kept_analysable_review entries match a NON-biological class but are still "
+                    "in the analysable set — reclassify final_class='xenobiotic-excluded' with "
+                    "the suggested_origin. Biologically exogenous compounds (drugs, dietary/gut- "
+                    "microbial/plant metabolites) are NOT in this lexicon — judge those yourself "
+                    "and record them as final_class='exogenous' with origin diet/drug/microbial/plant."}
 
 
 def harness_audit(workdir: str) -> dict:
@@ -388,8 +448,9 @@ def harness_audit(workdir: str) -> dict:
     session ledger + workdir artifacts and checks that the reasoning layer actually HONORED
     metabo-idmapper's OWN contract — no fabricated ID, no mass-only (W) candidate used as
     primary, final_class↔confidence coherent, fuzzy (M2/M3) accepts carry formula/mass
-    verification, locant/anomer-sensitive names re-checked, exogenous-exclusion applied
-    consistently, flagged auto-accepts reviewed, id-gap KEGG re-tried, every CALL has a
+    verification, locant/anomer-sensitive names re-checked, xenobiotic-exclusion applied
+    consistently, origin↔class coherent (exogenous kept vs xenobiotic excluded), flagged
+    auto-accepts reviewed, id-gap KEGG re-tried, every CALL has a
     rationale, no entry left pending, gem_crosswalk ran, and the stage-7 always-emit artifacts
     exist. Emits a per-check pass/warn/fail scorecard so 'rules defined but not followed' is
     caught. Changes nothing. Run LAST (after coverage_summary)."""
@@ -403,8 +464,10 @@ def gem_crosswalk(workdir: str, feature_ids: list[str] | None = None,
     """Map accepted KEGG/HMDB/ChEBI ids to Mouse-GEM MAM species (flux input).
     Sets gem_mam + gem_cause ('id-gap' when it has ids but the GEM lacks the xref)."""
     s = Session(workdir)
+    # endogenous primary mappings + kept exogenous compounds (both may resolve to a MAM);
+    # xenobiotic-excluded / unmapped / structure-only-without-id are skipped.
     ids = feature_ids or [fid for fid, e in s.entries.items()
-                          if e.get("final_class") in PRIMARY_CLASSES]
+                          if e.get("final_class") in (PRIMARY_CLASSES | {"exogenous"})]
     mapped = 0
     id_gap_with_kegg: list[dict] = []
     stats = _gem.model_stats(model_path)
@@ -438,16 +501,17 @@ def gem_crosswalk(workdir: str, feature_ids: list[str] | None = None,
 
 
 def backfill_hmdb(workdir: str, db: str | None = None) -> dict:
-    """Bridge missing HMDB for every non-exogenous entry lacking an accepted HMDB, using its
+    """Bridge missing HMDB for every non-excluded entry lacking an accepted HMDB, using its
     available ids (InChIKey/KEGG/ChEBI/PubChem) via BridgeDb in ONE batched call, then accept.
 
     Reflects the run-2 finding that HMDB rides along with KEGG matching and is under-counted;
-    this maximizes HMDB coverage. Does not touch KEGG assignments or final_class of KEGG-mapped
-    entries (HMDB is added as an extra xref); a structure-only entry that gains HMDB → HMDB-mapped.
+    this maximizes HMDB coverage. Does not touch KEGG assignments or the final_class/origin of
+    KEGG-mapped or exogenous entries (HMDB is added as an extra xref); a structure-only entry
+    that gains HMDB → HMDB-mapped. xenobiotic-excluded entries are skipped.
     """
     s = Session(workdir)
     targets = [(fid, e) for fid, e in s.entries.items()
-               if e.get("final_class") in ("KEGG-mapped", "structure-only")
+               if e.get("final_class") in ("KEGG-mapped", "structure-only", "exogenous")
                and not e.get("accepted", {}).get("hmdb")]
     queries = []
     for fid, e in targets:
@@ -469,8 +533,12 @@ def backfill_hmdb(workdir: str, db: str | None = None) -> dict:
         if not hmdbs:
             continue
         acc = dict(e.get("accepted", {})); acc["hmdb"] = hmdbs[0]
+        # preserve class + origin: an exogenous compound stays exogenous when it gains HMDB;
+        # only a structure-only entry is allowed to be promoted (final_class=None → derive).
+        keep_fc = e.get("final_class") if e.get("final_class") == "exogenous" else None
         record_decision(workdir, fid, rationale="HMDB backfill (BridgeDb)",
-                        accepted=acc, confidence=e.get("confidence") or "M2")
+                        accepted=acc, final_class=keep_fc, origin=e.get("origin"),
+                        confidence=e.get("confidence") or "M2")
         gained.append({"feature_id": fid, "name": e["original_name"], "hmdb": hmdbs[0]})
         s = Session(workdir)
     return {"targets_missing_hmdb": len(targets), "hmdb_gained": len(gained),
@@ -492,7 +560,9 @@ _ROUTE = {
 def mapping_provenance(workdir: str, export: bool = True) -> dict:
     """Recovery provenance for the report: what was mapped to KEGG / HMDB BEYOND the
     MetaboAnalyst 1st pass and by which logic, plus the unmapped (harmonized-name-tried,
-    reason). Writes kegg_recovered.tsv, hmdb_recovered.tsv, unmapped_harmonization.tsv."""
+    reason) and the two origin buckets. Writes kegg_recovered.tsv, hmdb_recovered.tsv,
+    unmapped_harmonization.tsv, exogenous_kept.tsv (biological outside-host, KEPT + origin),
+    and xenobiotic_excluded.tsv (non-biological contaminant, EXCLUDED + origin)."""
     import csv as _csv
 
     s = Session(workdir)
@@ -516,39 +586,51 @@ def mapping_provenance(workdir: str, export: bool = True) -> dict:
             return e["normalized"].get("normalized", "")
         return q
 
-    def exo_category(reason):
+    def category_of(e, reason):
+        # prefer the recorded origin tag; else fall back to the contaminant lexicon / reason text
+        origin = e.get("origin")
+        if origin and origin != "endogenous":
+            return origin
+        cat = _lex.xenobiotic_category(e["original_name"])
+        if cat:
+            return cat
         r = (reason or "").lower()
         if any(w in r for w in ("antibiotic", "drug", "pharmac", "sulfonamide", "appetite",
                                 "antihistamine", "alzheimer")):
             return "drug"
+        if any(w in r for w in ("diet", "food", "plant", "dietary")):
+            return "diet"
+        if any(w in r for w in ("microb", "gut", "bacter")):
+            return "microbial"
         if any(w in r for w in ("surfactant", "detergent", "diethanolamide", "sulfonic",
                                 "amidopropyl", "alkyl sulfate")):
             return "surfactant"
         if any(w in r for w in ("plasticizer", "phthalate", "phosphate ester", "flame")):
             return "plasticizer"
         if any(w in r for w in ("additive", "trifluoroacetic", "mobile phase", "ion-pair", "ion pairing")):
-            return "LC-MS additive"
-        if any(w in r for w in ("antioxidant", "nitrophenol", "tert-butyl")):
-            return "industrial antioxidant"
-        if any(w in r for w in ("reagent", "building block", "industrial", "thiocyanate", "synthetic")):
-            return "industrial/reagent"
-        return "xenobiotic"
+            return "additive"
+        if any(w in r for w in ("antioxidant", "nitrophenol", "tert-butyl", "reagent",
+                                "building block", "industrial", "thiocyanate", "synthetic")):
+            return "industrial"
+        return "unspecified"
 
-    kegg_rows, hmdb_rows, unmapped_rows, exo_rows = [], [], [], []
+    def reason_of(e):
+        excl = [d.get("rationale", "") for d in e.get("decisions", [])
+                if d.get("action") in ("exclude", "accept", "auto_accept")]
+        return excl[-1] if excl else (e.get("decisions", [{}])[-1].get("rationale", ""))
+
+    kegg_rows, hmdb_rows, unmapped_rows, exo_kept_rows, xeno_rows = [], [], [], [], []
     for fid, e in s.entries.items():
         a = e.get("accepted", {})
         m = ma(e)
-        if e.get("final_class") == "exogenous-excluded":
-            tags = sorted({t for d in e.get("decisions", []) if d.get("action") == "screen"
-                           for t in (d.get("tags") or [])})
-            excl = [d.get("rationale", "") for d in e.get("decisions", []) if d.get("action") == "exclude"]
-            if not excl:
-                excl = [d.get("rationale", "") for d in e.get("decisions", [])
-                        if "exclud" in d.get("rationale", "").lower() or "contaminant" in d.get("rationale", "").lower()]
-            reason = excl[-1] if excl else (e.get("decisions", [{}])[-1].get("rationale", ""))
-            ids = ";".join(f"{k}:{a[k]}" for k in ("kegg", "hmdb", "chebi", "pubchem") if a.get(k))
-            category = ";".join(tags) if tags else exo_category(reason)
-            exo_rows.append([fid, e["original_name"], category, ids, reason])
+        ids = ";".join(f"{k}:{a[k]}" for k in ("kegg", "hmdb", "chebi", "pubchem") if a.get(k))
+        if e.get("final_class") == "xenobiotic-excluded":
+            reason = reason_of(e)
+            xeno_rows.append([fid, e["original_name"], category_of(e, reason), ids, reason])
+        elif e.get("final_class") == "exogenous":
+            reason = reason_of(e)
+            xref = "in-model" if e.get("gem_mam") else (e.get("gem_cause") or "")
+            exo_kept_rows.append([fid, e["original_name"], category_of(e, reason), ids, xref, reason])
         if a.get("kegg") and not m.get("kegg"):
             c = cand_for(e, "kegg", a["kegg"])
             route = _ROUTE.get(c["source"], c["source"]) if c else "?"
@@ -577,8 +659,10 @@ def mapping_provenance(workdir: str, export: bool = True) -> dict:
                                 "route", "logic"], hmdb_rows),
         "unmapped_harmonization.tsv": (["feature_id", "original_name", "harmonized_names_tried",
                                         "final_class", "structure_ids", "reason"], unmapped_rows),
-        "exogenous_excluded.tsv": (["feature_id", "original_name", "category", "ids", "reason"],
-                                   exo_rows),
+        "exogenous_kept.tsv": (["feature_id", "original_name", "origin", "ids", "gem_xref",
+                                "reason"], exo_kept_rows),
+        "xenobiotic_excluded.tsv": (["feature_id", "original_name", "origin", "ids", "reason"],
+                                    xeno_rows),
     }
     paths = []
     if export:
@@ -590,8 +674,11 @@ def mapping_provenance(workdir: str, export: bool = True) -> dict:
                 w.writerows(rows)
             paths.append(str(p))
     return {"kegg_recovered": len(kegg_rows), "hmdb_recovered": len(hmdb_rows),
-            "unmapped": len(unmapped_rows), "exogenous": len(exo_rows), "exports": paths,
-            "note": "recovered = mapped BEYOND MetaboAnalyst 1st pass; route/logic per row."}
+            "unmapped": len(unmapped_rows), "exogenous_kept": len(exo_kept_rows),
+            "xenobiotic_excluded": len(xeno_rows), "exports": paths,
+            "note": "recovered = mapped BEYOND MetaboAnalyst 1st pass; route/logic per row. "
+                    "exogenous_kept = biological outside-host signal (kept); xenobiotic_excluded "
+                    "= non-biological contaminant (dropped)."}
 
 
 def annotate_source(workdir: str, source: str | None = None, sheet: "str | int" = 0,
@@ -626,7 +713,8 @@ def annotate_source(workdir: str, source: str | None = None, sheet: "str | int" 
                 best, bestn = c, hit
         col = best
     idmap = {e["original_name"].strip().lower(): e for e in s.entries.values()}
-    add = ["final_class", "confidence", "kegg", "hmdb", "chebi", "pubchem", "inchikey", "gem_mam"]
+    add = ["final_class", "origin", "confidence", "kegg", "hmdb", "chebi", "pubchem",
+           "inchikey", "gem_mam"]
     for a in add:
         df["ID_" + a] = ""
     matched = 0
@@ -637,6 +725,7 @@ def annotate_source(workdir: str, source: str | None = None, sheet: "str | int" 
         matched += 1
         acc = e.get("accepted", {})
         df.at[i, "ID_final_class"] = e.get("final_class", "")
+        df.at[i, "ID_origin"] = e.get("origin") or ""
         df.at[i, "ID_confidence"] = e.get("confidence", "")
         for k in ("kegg", "hmdb", "chebi", "pubchem", "inchikey"):
             df.at[i, "ID_" + k] = acc.get(k, "")
@@ -705,14 +794,17 @@ def coverage_summary(workdir: str, export: bool = True, figures: bool = True) ->
     has_kegg = sum(1 for e in s.entries.values() if e.get("accepted", {}).get("kegg"))
     has_hmdb = sum(1 for e in s.entries.values() if e.get("accepted", {}).get("hmdb"))
     gem_mapped = sum(1 for e in s.entries.values() if e.get("gem_mam"))
+    exogenous = counts.get("exogenous", 0)
+    xenobiotic_excluded = counts.get("xenobiotic-excluded", 0)
     summary = {"total": n, "counts": counts,
                "primary_usable": primary, "has_kegg": has_kegg, "has_hmdb": has_hmdb,
-               "gem_mapped": gem_mapped}
+               "gem_mapped": gem_mapped, "exogenous": exogenous,
+               "xenobiotic_excluded": xenobiotic_excluded}
     if export:
         led = s.workdir / "master_ledger.tsv"
-        cols = ["feature_id", "original_name", "normalized", "final_class", "confidence",
-                "kegg", "hmdb", "chebi", "pubchem", "inchikey", "gem_mam", "gem_cause",
-                "n_candidates", "n_decisions"]
+        cols = ["feature_id", "original_name", "normalized", "final_class", "origin",
+                "confidence", "kegg", "hmdb", "chebi", "pubchem", "inchikey", "gem_mam",
+                "gem_cause", "n_candidates", "n_decisions"]
         with open(led, "w", newline="") as f:
             w = csv.writer(f, delimiter="\t")
             w.writerow(cols)
@@ -720,7 +812,8 @@ def coverage_summary(workdir: str, export: bool = True, figures: bool = True) ->
                 acc = e.get("accepted", {})
                 w.writerow([fid, e["original_name"],
                             e["normalized"].get("normalized", ""),
-                            e.get("final_class", ""), e.get("confidence", ""),
+                            e.get("final_class", ""), e.get("origin") or "",
+                            e.get("confidence", ""),
                             acc.get("kegg", ""), acc.get("hmdb", ""), acc.get("chebi", ""),
                             acc.get("pubchem", ""), acc.get("inchikey", ""),
                             ";".join(e.get("gem_mam", [])), e.get("gem_cause") or "",
@@ -733,7 +826,9 @@ def coverage_summary(workdir: str, export: bool = True, figures: bool = True) ->
                 w.writerow([f"class:{c}", counts[c], n,
                             round(100 * counts[c] / n, 1) if n else 0])
             for name, val in (("primary_usable", primary), ("has_kegg", has_kegg),
-                              ("has_hmdb", has_hmdb), ("gem_mapped", gem_mapped)):
+                              ("has_hmdb", has_hmdb), ("gem_mapped", gem_mapped),
+                              ("exogenous", exogenous),
+                              ("xenobiotic_excluded", xenobiotic_excluded)):
                 w.writerow([name, val, n, round(100 * val / n, 1) if n else 0])
         summary["exports"] = [str(led), str(cov)]
     if figures:

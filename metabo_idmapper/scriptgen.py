@@ -101,13 +101,13 @@ def generate_notebook(workdir: str) -> str:
     stage2 = (
         "# ══ 03_STAGE 2 — extract the unmapped list ══════════════════════════════════════\n"
         "# INPUT   : stage1 (Stage 1), LEDGER (setup).\n"
-        "# DOES    : 1차에서 KEGG·HMDB 둘 다 없는 항목만 추림(exogenous 제외).\n"
+        "# DOES    : 1차에서 KEGG·HMDB 둘 다 없는 항목만 추림(xenobiotic 제외).\n"
         "# OUTPUT  : unmapped (feature id 리스트).\n"
         "# REUSED  : Stage 3(rename 재검색 대상).\n"
-        "# STAGE 2 — extract the unmapped list (no KEGG/HMDB from stage 1; skip exogenous)\n"
+        "# STAGE 2 — extract the unmapped list (no KEGG/HMDB from stage 1; skip xenobiotic-excluded)\n"
         "unmapped = []\n"
         "for fid, v in stage1.items():\n"
-        "    if not (v['kegg'] or v['hmdb']) and LEDGER[fid].get('final_class') != 'exogenous-excluded':\n"
+        "    if not (v['kegg'] or v['hmdb']) and LEDGER[fid].get('final_class') != 'xenobiotic-excluded':\n"
         "        unmapped.append(fid)\n"
         "print('unmapped after 1st pass:', len(unmapped))"
     )
@@ -175,7 +175,7 @@ def generate_notebook(workdir: str) -> str:
         "# STAGE 4 — cross-check extracted IDs across DBs (BridgeDbR) + HMDB backfill\n"
         "bq = []\n"
         "for fid, e in LEDGER.items():\n"
-        "    if e.get('final_class') == 'exogenous-excluded': continue\n"
+        "    if e.get('final_class') == 'xenobiotic-excluded': continue\n"
         "    ids = dict(stage1[fid]); ids.update(recovered.get(fid, {}))\n"
         "    src = None\n"
         "    if ids.get('inchikey'): src = ('InChIKey', ids['inchikey'])\n"
@@ -198,7 +198,7 @@ def generate_notebook(workdir: str) -> str:
     assemble = (
         "# ══ 06_ASSEMBLE — 최종 행 구성 ══════════════════════════════════════════════════\n"
         "# INPUT   : stage1 + recovered + backfill + LEDGER(accepted/final_class).\n"
-        "# DOES    : feature별 최종 KEGG/HMDB/ChEBI/PubChem/InChIKey + class 확정(exogenous는 ID 비움).\n"
+        "# DOES    : feature별 최종 KEGG/HMDB/ChEBI/PubChem/InChIKey + class 확정(xenobiotic-excluded는 ID 비움).\n"
         "# OUTPUT  : rows (master_ledger.tsv의 원본).\n"
         "# REUSED  : GEM crosswalk, master_ledger.tsv, UpSet figure.\n"
         "# assemble final rows (respect recorded class/exclusions read from the saved ledger)\n"
@@ -214,7 +214,7 @@ def generate_notebook(workdir: str) -> str:
         "           'chebi': acc.get('chebi', '') or '',\n"
         "           'pubchem': ids.get('pubchem') or acc.get('pubchem', '') or '',\n"
         "           'inchikey': ids.get('inchikey') or acc.get('inchikey', '') or ''}\n"
-        "    if e.get('final_class') == 'exogenous-excluded':\n"
+        "    if e.get('final_class') == 'xenobiotic-excluded':\n"
         "        for db in DBS: row[db] = ''\n"
         "    rows.append(row)\n"
         "print('rows:', len(rows))"
@@ -265,11 +265,11 @@ def generate_notebook(workdir: str) -> str:
 
     upset = (
         "# ══ 09_UPSET — DB 커버리지 figure (raw matplotlib) ══════════════════════════════\n"
-        "# INPUT   : rows(비-exogenous).  OUTPUT: figures/db_matching_upset.png + enriched_xref.tsv.\n"
+        "# INPUT   : rows(비-excluded).  OUTPUT: figures/db_matching_upset.png + enriched_xref.tsv.\n"
         "# DOES    : 5-DB 멤버십 교집합 UpSet(상단 교집합 크기·행렬·좌측 DB별 set size).\n"
         "# REUSED  : 리포트 figure; enriched_xref.tsv는 db_matching_improvement 등 후속 그림 source.\n"
         "# UpSet coverage figure (raw matplotlib), inline\n"
-        "mem = [r for r in rows if r['final_class'] != 'exogenous-excluded']\n"
+        "mem = [r for r in rows if r['final_class'] != 'xenobiotic-excluded']\n"
         "for r in mem:\n"
         "    for db in DBS: r['has_' + db] = bool(r.get(db))\n"
         "per_db = {db: sum(m['has_' + db] for m in mem) for db in DBS}\n"
@@ -538,8 +538,8 @@ def main():
     print("=" * 70)
     print("02_STAGE 2 — extract the unmapped list")
     unmapped = [fid for fid, v in stage1.items() if not (v["kegg"] or v["hmdb"])
-                and entries[fid].get("final_class") != "exogenous-excluded"]
-    print(f"  unmapped after 1st pass (non-exogenous): {len(unmapped)}")
+                and entries[fid].get("final_class") != "xenobiotic-excluded"]
+    print(f"  unmapped after 1st pass (non-excluded): {len(unmapped)}")
 
     print("=" * 70)
     print("03_STAGE 3 — rename-rule ID extraction: RE-RUN DB search with the saved harmonized names")
@@ -576,7 +576,7 @@ def main():
     # bridge every id we have (from stage 1 or 3) to fill KEGG/HMDB across DBs
     bridge_q, back = [], {}
     for fid, e in entries.items():
-        if e.get("final_class") == "exogenous-excluded":
+        if e.get("final_class") == "xenobiotic-excluded":
             continue
         ids = {**stage1[fid], **recovered.get(fid, {})}
         # BridgeDb needs the full datasource NAMES (getSystemCode), not short keys
@@ -608,7 +608,7 @@ def main():
                "hmdb": ids.get("hmdb") or back.get(fid) or acc.get("hmdb", ""),
                "chebi": acc.get("chebi", ""), "pubchem": ids.get("pubchem") or acc.get("pubchem", ""),
                "inchikey": ids.get("inchikey") or acc.get("inchikey", "")}
-        if e.get("final_class") == "exogenous-excluded":
+        if e.get("final_class") == "xenobiotic-excluded":
             for db in DBS: row[db] = ""
         rows.append(row)
 
@@ -634,7 +634,7 @@ def _write_outputs(rows):
 def _plot_upset(rows):
     import matplotlib; matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    mem = [r for r in rows if r.get("final_class") != "exogenous-excluded"]
+    mem = [r for r in rows if r.get("final_class") != "xenobiotic-excluded"]
     for r in mem:
         for db in DBS: r[f"has_{db}"] = bool(r.get(db))
     N = len(mem)

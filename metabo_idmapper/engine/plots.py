@@ -38,13 +38,14 @@ def _union(e: dict) -> dict:
 
 
 def upset(workdir: str) -> dict:
-    """5-DB UpSet over non-exogenous features. Writes figures/db_matching_upset.png +
-    enriched_xref.tsv. Returns per-DB totals and intersection combos."""
+    """5-DB UpSet over analysable features (endogenous + kept exogenous; xenobiotic-excluded
+    dropped). Writes figures/db_matching_upset.png + enriched_xref.tsv. Returns per-DB totals
+    and intersection combos."""
     E = _entries(workdir)
     figdir = Path(workdir) / "figures"; figdir.mkdir(exist_ok=True)
     rows = []
     for fid, e in E.items():
-        if e.get("final_class") == "exogenous-excluded":
+        if e.get("final_class") == "xenobiotic-excluded":
             continue
         ids = _union(e)
         rows.append({"feature_id": fid, "name": e.get("original_name", ""),
@@ -129,12 +130,12 @@ def improvement(workdir: str) -> dict:
 
     N = len(E)
     base = {db: 0 for db in DBS}; after = {db: 0 for db in DBS}
-    base_any = after_prim = struct = exog = gem_base = gem_after = 0
+    base_any = after_prim = struct = exog = xeno = gem_base = gem_after = 0
     for e in E.values():
         c = ma(e)
         for db in DBS:
             base[db] += bool(c.get(db))
-        en = _union(e) if e.get("final_class") != "exogenous-excluded" else {db: set() for db in DBS}
+        en = _union(e) if e.get("final_class") != "xenobiotic-excluded" else {db: set() for db in DBS}
         for db in DBS:
             after[db] += bool(en[db])
         base_any += bool(c.get("kegg") or c.get("hmdb"))
@@ -143,8 +144,10 @@ def improvement(workdir: str) -> dict:
             after_prim += 1
         elif fc == "structure-only":
             struct += 1
-        elif fc == "exogenous-excluded":
+        elif fc == "exogenous":
             exog += 1
+        elif fc == "xenobiotic-excluded":
+            xeno += 1
         if e.get("gem_mam"):
             gem_after += 1
             if c.get("kegg") or c.get("hmdb"):
@@ -179,8 +182,9 @@ def improvement(workdir: str) -> dict:
     ax1.spines[["top", "right"]].set_visible(False)
     cats_base = [("mapped", base_any, "#2a7db5"), ("unresolved", N - base_any, "#d0d0d0")]
     cats_after = [("primary\n(KEGG/HMDB)", after_prim, "#2a7db5"),
-                  ("structure-only", struct, "#e0a13a"), ("exogenous", exog, "#b0524a"),
-                  ("unresolved", N - after_prim - struct - exog, "#d0d0d0")]
+                  ("structure-only", struct, "#e0a13a"), ("exogenous\n(kept)", exog, "#3a9b6e"),
+                  ("xenobiotic\n(excluded)", xeno, "#b0524a"),
+                  ("unresolved", N - after_prim - struct - exog - xeno, "#d0d0d0")]
     for xi, cats in [(0, cats_base), (1, cats_after)]:
         bottom = 0
         for name, v, col in cats:

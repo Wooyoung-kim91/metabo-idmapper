@@ -18,7 +18,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .engine import lexicon as _lex
-from .state import PRIMARY_CLASSES, Session
+from .state import (CLASS_FOR_ORIGIN, EXCLUDED_CLASSES, PRIMARY_CLASSES,
+                    VALID_ORIGINS, Session)
+
+# classes that KEEP the compound in the analysable set (vs xenobiotic-excluded / unmapped)
+KEPT_CLASSES = PRIMARY_CLASSES | {"structure-only", "exogenous"}
 
 # confidence-tier vocabulary from guidance.CANONICAL
 VALID_CONF = {"M1", "M2", "M3", "M4", "W", "X", "U"}
@@ -124,7 +128,7 @@ def _check_isomer_locant_safety(s: Session) -> tuple[str, str, list]:
     for fid, e in s.entries.items():
         flags = e.get("normalized", {}).get("flags", [])
         if ("has_digit_locant" in flags
-                and e.get("final_class") in (PRIMARY_CLASSES | {"structure-only"})
+                and e.get("final_class") in KEPT_CLASSES
                 and e.get("confidence") not in {"M1", None}):
             off.append(fid)
     return ("warn" if off else "pass",
@@ -133,27 +137,51 @@ def _check_isomer_locant_safety(s: Session) -> tuple[str, str, list]:
 
 
 def _check_contaminant_consistency(s: Session) -> tuple[str, str, list]:
-    """Contract (driver): apply the exogenous-exclusion rule CONSISTENTLY per contaminant class,
-    and act on the 'contaminant kept endogenous' warning. Flags (a) contaminant-class names kept
-    endogenous and (b) a class where some members are excluded but others kept."""
-    kept_endo, by_class_excluded, by_class_kept = [], {}, {}
+    """Contract (driver): a NON-biological (xenobiotic-lexicon) name must be
+    xenobiotic-excluded, applied CONSISTENTLY per class. Flags (a) xenobiotic-class names still
+    kept in the analysable set (primary/structure-only/exogenous) and (b) a class where some
+    members are excluded but others kept."""
+    kept, by_class_excluded, by_class_kept = [], {}, {}
     for fid, e in s.entries.items():
         tags = _lex.xenobiotic_hits(e["original_name"])
         if not tags:
             continue
-        fc = e.get("final_class")
-        endo = fc in (PRIMARY_CLASSES | {"structure-only"})
-        if endo:
-            kept_endo.append(fid)
+        is_kept = e.get("final_class") in KEPT_CLASSES
+        if is_kept:
+            kept.append(fid)
         for t in tags:
-            (by_class_kept if endo else by_class_excluded).setdefault(t, []).append(fid)
+            (by_class_kept if is_kept else by_class_excluded).setdefault(t, []).append(fid)
     inconsistent = sorted(set(by_class_excluded) & set(by_class_kept))
-    off = [f"{fid}:kept-endogenous" for fid in kept_endo]
+    off = [f"{fid}:kept-analysable" for fid in kept]
     off += [f"class[{t}]:excluded+kept" for t in inconsistent]
     return ("warn" if off else "pass",
-            f"{len(kept_endo)} contaminant-class name(s) kept endogenous; "
+            f"{len(kept)} xenobiotic-class name(s) kept in the analysable set; "
             f"{len(inconsistent)} class(es) excluded inconsistently" if off
-            else "exogenous-exclusion applied consistently", off)
+            else "xenobiotic-exclusion applied consistently", off)
+
+
+def _check_origin_coherence(s: Session) -> tuple[str, str, list]:
+    """Contract (new taxonomy): the origin tag must agree with final_class — biological
+    exogenous origins (diet/drug/microbial/plant) go with 'exogenous' (KEPT); non-biological
+    origins (contaminant/industrial/additive/...) go with 'xenobiotic-excluded' (EXCLUDED). An
+    'exogenous' entry must carry an origin. Invalid or mismatched tags are governance failures."""
+    off = []
+    for fid, e in s.entries.items():
+        fc, origin = e.get("final_class"), e.get("origin")
+        if fc == "exogenous" and not origin:
+            off.append(f"{fid}:exogenous-untagged")
+            continue
+        if origin is None:
+            continue
+        if origin not in VALID_ORIGINS:
+            off.append(f"{fid}:invalid-origin[{origin}]")
+            continue
+        implied = CLASS_FOR_ORIGIN.get(origin)
+        if implied and fc and implied != fc:
+            off.append(f"{fid}:{origin}->{implied}!={fc}")
+    return ("fail" if off else "pass",
+            f"{len(off)} entr(y/ies) with a missing/invalid/mismatched origin↔class" if off
+            else "origin tags cohere with final_class (exogenous kept, xenobiotic excluded)", off)
 
 
 def _check_flagged_auto_accepts_reviewed(s: Session) -> tuple[str, str, list]:
@@ -229,7 +257,7 @@ def _check_finalize_artifacts(s: Session) -> tuple[str, str, list]:
     required = [
         "master_ledger.tsv", "coverage_summary.tsv",
         "kegg_recovered.tsv", "hmdb_recovered.tsv",
-        "unmapped_harmonization.tsv", "exogenous_excluded.tsv",
+        "unmapped_harmonization.tsv", "exogenous_kept.tsv", "xenobiotic_excluded.tsv",
         "enriched_xref.tsv",
         "figures/db_matching_upset.png", "figures/db_matching_improvement.png",
         "code/reproduce_mapping.py", "code/reproduce_mapping.ipynb",
@@ -248,6 +276,7 @@ _CHECKS: list[Callable[[Session], tuple[str, str, list]]] = [
     _check_verify_before_fuzzy,
     _check_isomer_locant_safety,
     _check_contaminant_consistency,
+    _check_origin_coherence,
     _check_flagged_auto_accepts_reviewed,
     _check_id_gap_generic_kegg,
     _check_rationale_quality,

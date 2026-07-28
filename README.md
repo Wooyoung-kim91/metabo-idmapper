@@ -26,6 +26,23 @@ refuses any accepted ID that no tool produced.
 
 Call `midmap_guidance` first for the canonical workflow, confidence tiers (M1–U), and gotchas.
 
+### Origin taxonomy — exogenous vs xenobiotic
+`record_decision` resolves two axes: **ID coverage** (`final_class`) and **provenance**
+(`origin`). Non-endogenous compounds are split into two distinct classes instead of one
+"excluded" bucket:
+
+| final_class | origin | disposition |
+|---|---|---|
+| `KEGG-mapped` / `HMDB-mapped` / `structure-only` | `endogenous` (default) | host-produced, analysed |
+| **`exogenous`** | `diet` · `drug` · `microbial` · `plant` | **KEPT + tagged** — a real outside-host signal; keeps its KEGG/HMDB IDs and can enter the GEM crosswalk |
+| **`xenobiotic-excluded`** | `contaminant` · `industrial` · `additive` · `surfactant` · `plasticizer` · `reagent` | **EXCLUDED** — non-biological (LC-MS additive / surfactant / plasticizer / industrial) |
+
+`screen_exogenous` detects only the **non-biological** classes deterministically (and
+auto-suggests the origin); the biological-exogenous call (drug / diet / gut-microbial / plant)
+is a reasoning-layer judgement. A drug or dietary metabolite is tagged `exogenous` and **kept** —
+never dumped into the excluded bucket. The `harness_audit` `origin_coherence` check fails any
+entry whose origin and class disagree (e.g. `origin='drug'` with `xenobiotic-excluded`).
+
 ### Governance harness (`harness_audit`)
 A **read-only** self-audit — the metabo-idmapper counterpart to a run harness — that makes no
 identity call and changes nothing. Run it **last** (after `coverage_summary`): it reads the
@@ -34,8 +51,9 @@ own contract*, emitting a per-check **pass / warn / fail** scorecard. It catches
 "defined but not followed": a fabricated ID (accepted but produced by no tool), a mass-only
 **W**-tier candidate used as primary, an incoherent `final_class`↔confidence pair, a fuzzy
 (M2/M3) accept with no recorded formula/mass verification, a locant/anomer-sensitive name
-accepted via a non-exact route and never re-checked, a contaminant class excluded
-inconsistently, a flagged trade-name auto-accept never reviewed, an id-gap KEGG never re-tried,
+accepted via a non-exact route and never re-checked, a xenobiotic class excluded
+inconsistently, an origin↔class mismatch, a flagged trade-name auto-accept never reviewed, an
+id-gap KEGG never re-tried,
 a decision with no rationale, entries left pending, a skipped `gem_crosswalk`, or missing
 stage-7 always-emit artifacts. Fix every `fail`; review each `warn`.
 
@@ -44,15 +62,16 @@ stage-7 always-emit artifacts. Fix every `fail`; review each `warn`.
 - **Provenance tables** (`mapping_provenance`): `kegg_recovered.tsv` / `hmdb_recovered.tsv` —
   what was mapped BEYOND the MetaboAnalyst 1st pass, with the harmonized name, id, and the
   logic/route (typo fix, synonym search, xref bridge); `unmapped_harmonization.tsv` —
-  structure-only entries with the names tried and why mapping failed; `exogenous_excluded.tsv`
-  — non-metabolite contaminants/drugs excluded, with category + full reason.
+  structure-only entries with the names tried and why mapping failed; `exogenous_kept.tsv` —
+  biological outside-host metabolites kept + tagged; `xenobiotic_excluded.tsv` — non-biological
+  contaminants excluded, each with its `origin` + full reason.
 - **PPTX report** (`export_report_ppt`): a slide deck built from the run artifacts —
   Title · Coverage KPIs · Methods · Pipeline · UpSet · Improvement · Recovery cause→fix ·
-  KEGG/HMDB recovered · Unmapped · Exogenous · Outputs (full text, paginated).
+  KEGG/HMDB recovered · Unmapped · Exogenous(kept) · Xenobiotic(excluded) · Outputs.
 - **Annotated source** (`annotate_source`): the ORIGINAL data file with the final ID columns
   appended (`<source>_annotated.xlsx/.tsv`: intensity matrix + ID_kegg / ID_hmdb / ID_chebi /
-  ID_pubchem / ID_inchikey / ID_final_class / ID_gem_mam per compound). Auto-detects the name
-  column; pass `header=` for vendor sheets with a preamble.
+  ID_pubchem / ID_inchikey / ID_final_class / ID_origin / ID_gem_mam per compound). Auto-detects
+  the name column; pass `header=` for vendor sheets with a preamble.
 - **Figures** (`plot_coverage`): `figures/db_matching_upset.png` (5-DB coverage UpSet +
   `enriched_xref.tsv`) and `figures/db_matching_improvement.png` (MetaboAnalyst baseline
   vs current logic).

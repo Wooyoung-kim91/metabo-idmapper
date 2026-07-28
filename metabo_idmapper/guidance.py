@@ -40,8 +40,9 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
 4. bridge_xref    — promote a single accepted ID (e.g. PubChem CID) to the others
                     (KEGG/HMDB) via BridgeDb. A structure-only hit with no KEGG/HMDB
                     stays structure-only (not primary-usable for pathway/flux).
-5. record_decision — commit your CALL: accepted IDs, final_class, confidence, or
-                     exogenous exclusion, with a one-line rationale.
+5. record_decision — commit your CALL: accepted IDs, final_class, confidence, `origin`, or a
+                     xenobiotic exclusion, with a one-line rationale. `origin` decides the class
+                     for non-endogenous compounds (see origin taxonomy below).
 6. gem_crosswalk  — map accepted KEGG/HMDB/ChEBI IDs to Mouse-GEM MAM species.
 6b. backfill_hmdb — bridge missing HMDB (KEGG/InChIKey/ChEBI/PubChem → HMDB) so HMDB
                     coverage is not under-counted relative to KEGG. Run before coverage.
@@ -56,15 +57,30 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
                     verifies the reasoning layer honored THIS contract — no fabricated ID, no
                     mass-only (W) candidate used as primary, final_class↔confidence coherent,
                     fuzzy (M2/M3) accepts verified, locant-sensitive names re-checked,
-                    exogenous-exclusion consistent, flagged auto-accepts reviewed, id-gap KEGG
-                    re-tried, rationales present, nothing pending, gem_crosswalk ran, all
-                    always-emit artifacts present. Fix every `fail`; review each `warn`.
+                    xenobiotic-exclusion consistent, origin↔class coherent, flagged auto-accepts
+                    reviewed, id-gap KEGG re-tried, rationales present, nothing pending,
+                    gem_crosswalk ran, all always-emit artifacts present. Fix every `fail`;
+                    review each `warn`.
 
 ## final_class vocabulary
-- KEGG-mapped / HMDB-mapped : primary-usable (pathway + flux input).
+- KEGG-mapped / HMDB-mapped : endogenous, primary-usable (pathway + flux input).
 - structure-only            : has PubChem/ChEBI/InChIKey but no KEGG/HMDB -> NOT primary.
-- exogenous-excluded        : xenobiotic / industrial / drug -> excluded from analysis.
+- exogenous                 : biologically real but from OUTSIDE the host (diet/drug/microbial/
+                              plant). KEPT + tagged; may carry KEGG/HMDB IDs and enter the GEM
+                              crosswalk as boundary/exchange species. NOT the same as a
+                              contaminant — this is a genuine signal, analysed separately.
+- xenobiotic-excluded       : NON-biological (LC-MS additive / surfactant / plasticizer /
+                              industrial / reagent contaminant) -> dropped from analysis.
 - unmapped                  : no trustworthy identity found.
+
+## origin taxonomy (the `origin` field on record_decision — decides exogenous vs xenobiotic)
+Biological, outside-host  -> final_class 'exogenous' (KEPT):  diet · drug · microbial · plant
+Non-biological / technical -> final_class 'xenobiotic-excluded' (EXCLUDED):
+                             contaminant · industrial · additive · surfactant · plasticizer · reagent
+Host-produced             -> origin 'endogenous' (default for KEGG/HMDB/structure-only).
+screen_exogenous detects ONLY the non-biological classes (deterministic lexicon); the
+diet/drug/microbial/plant call is YOUR judgement. Do not exclude a drug or dietary metabolite as
+a contaminant — tag it 'exogenous' so it is kept and analysed as an outside-host signal.
 
 ## confidence tiers
 - M1 exact/direct DB name match (MetaboAnalyst/KEGG/HMDB exact).
@@ -72,7 +88,7 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
 - M3 verified typo fix (edit-distance candidate, structure/formula agree).
 - M4 structure-only (PubChem/ChEBI) with no biological DB xref.
 - W  mass/adduct-only weak candidate (do NOT use as primary).
-- X  reclassified exogenous.
+- X  reclassified non-endogenous (exogenous or xenobiotic-excluded).
 - U  unresolved.
 
 ## unmapped-cause classification (for gem_crosswalk gaps)

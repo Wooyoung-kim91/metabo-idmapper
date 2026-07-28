@@ -2,9 +2,12 @@
 
 - pad_hmdb: canonicalize HMDB accessions to the zero-padded 7-digit form (HMDB00349 ->
   HMDB0000349) so downstream joins are stable.
-- xenobiotic_hits: flag names matching known NON-biological classes (LC-MS additives,
-  surfactants/detergents, plasticizers). This EMITS evidence only — the endogenous-vs-
-  xenobiotic CALL stays with the reasoning layer (drugs/dietary compounds are a judgement).
+- xenobiotic_hits / xenobiotic_category: flag names matching known NON-biological classes
+  (LC-MS additives, surfactants/detergents, plasticizers, industrial reagents) and map them to
+  an origin category (additive/surfactant/plasticizer/industrial). This EMITS evidence only —
+  it detects the *non-biological* (xenobiotic → excluded) classes deterministically. The
+  BIOLOGICAL-exogenous call (diet/drug/microbial/plant → kept as final_class 'exogenous') stays
+  with the reasoning layer, because those are not lexicon-matchable without judgement.
 """
 
 from __future__ import annotations
@@ -26,24 +29,36 @@ def pad_hmdb(acc: str | None) -> str | None:
 
 # Patterns for clearly non-biological classes the reviewer flagged as inconsistently kept.
 # Deliberately conservative — surfactants/plasticizers/reagent additives, not ambiguous
-# dietary/plant compounds (those stay a reasoning-layer call).
+# dietary/plant compounds (those stay a reasoning-layer call). Each tag carries an `origin`
+# category (state.XENOBIOTIC_ORIGINS) so a hit routes straight to final_class
+# 'xenobiotic-excluded'.
 _CONTAMINANT_PATTERNS = [
-    (r"trifluoroacetic", "lcms-additive"),
-    (r"\bphthalate\b", "plasticizer"),
-    (r"benzenesulfonic", "surfactant"),
-    (r"\blauryl sulfate\b|dodecyl sulfate|tetradecylsulfate|\balkyl sulfate", "surfactant"),
-    (r"diethanolamide|amidopropyl betaine|lauramidopropyl", "surfactant"),
-    (r"butoxyethyl\).*phosphate|tributyl phosphate|tricresyl", "plasticizer/flame-retardant"),
-    (r"nitrophenol|di-?tert-butyl", "industrial-antioxidant"),
-    (r"thiocyanate|erucamide|pentadecylbenzoic", "industrial"),
+    (r"trifluoroacetic", "lcms-additive", "additive"),
+    (r"\bphthalate\b", "plasticizer", "plasticizer"),
+    (r"benzenesulfonic", "surfactant", "surfactant"),
+    (r"\blauryl sulfate\b|dodecyl sulfate|tetradecylsulfate|\balkyl sulfate", "surfactant", "surfactant"),
+    (r"diethanolamide|amidopropyl betaine|lauramidopropyl", "surfactant", "surfactant"),
+    (r"butoxyethyl\).*phosphate|tributyl phosphate|tricresyl", "plasticizer/flame-retardant", "plasticizer"),
+    (r"nitrophenol|di-?tert-butyl", "industrial-antioxidant", "industrial"),
+    (r"thiocyanate|erucamide|pentadecylbenzoic", "industrial", "industrial"),
 ]
 
 
 def xenobiotic_hits(name: str) -> list[str]:
     """Return the contaminant-class tags a name matches (empty = no lexicon hit)."""
     low = (name or "").lower()
-    tags = []
-    for pat, tag in _CONTAMINANT_PATTERNS:
-        if re.search(pat, low):
-            tags.append(tag)
+    tags = [tag for pat, tag, _origin in _CONTAMINANT_PATTERNS if re.search(pat, low)]
     return sorted(set(tags))
+
+
+def xenobiotic_category(name: str) -> str | None:
+    """Map a name to its dominant NON-biological origin category — one of
+    state.XENOBIOTIC_ORIGINS (additive/surfactant/plasticizer/industrial) — or None if no
+    lexicon class matches. Used to auto-suggest origin for a 'xenobiotic-excluded' call.
+    A None result does NOT mean endogenous: drugs/diet/microbial/plant are exogenous origins
+    that this deterministic lexicon deliberately leaves to the reasoning layer."""
+    low = (name or "").lower()
+    for pat, _tag, origin in _CONTAMINANT_PATTERNS:
+        if re.search(pat, low):
+            return origin
+    return None
