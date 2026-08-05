@@ -27,6 +27,29 @@ Stage 2 `exact_match` (none): exact curated-DB name match is a lookup → auto-a
 `exact_match` returns `flagged_auto_accepts` — messy/ambiguous names (trade-name-like single
 tokens, abbrev/combined names) that were auto-accepted. Treat these as SUSPECT and route them
 to the reviewer; verify with a DB lookup that the match is the intended compound.
+It also returns `isomer_or_class_mismatch`: the DB's own Match name disagrees with the query on
+a discriminant axis, or is a class entry for a species-level name. An "exact" match to a
+DIFFERENT isomer is not an identity — re-decide every one of those.
+
+## The errors that are NOT missing ids (check these explicitly, every run)
+A missing id is visible; a wrong id is not. All four of these happened in verified runs and
+none is catchable by comparing ids or formulas:
+- `id_name_check` on EVERY KEGG that came from a search or a bridge. A taurochenodeoxycholate
+  entry carried C05472, whose own KEGG name is "Urocortisol/Tetrahydrocortisol". The harness
+  FAILS a searched/bridged KEGG that was never back-checked.
+- `collision_check` before finalizing. Lc3Cer and nLc4Cer — one ratio's numerator and
+  denominator — both landed on PubChem CID 131770449 / HMDB0062485 because PubChem lists the
+  two names as synonyms of one entry; the ratio would have been exactly 1. If the tool says
+  `collision`, split them; if `class-id-shared`, keep it but report those as class-level.
+- ether vs acyl, and species vs class. LysoPC(P-16:0) received C04230
+  ("1-Acyl-sn-glycero-3-phosphocholine") like every other lyso-PC, but P-16:0 is a 1Z-alkenyl
+  vinyl ether. When KEGG has no entry for the actual species, NO id beats a wrong id: drop the
+  KEGG and keep the species-level HMDB.
+- isomer swaps inside a series. nLc4Cer's candidate C04910 is the beta1-3 LACTO isomer;
+  `search_synonym` and `id_name_check` label it `conflict` on glycan_series. If a whole marker
+  panel sits on one axis (neolacto), a silent swap off that axis invalidates the panel.
+Formula/mass CANNOT settle any of these — the isomers are formula-identical. Say in the
+rationale which axis settled it (linkage, ether bond, chain, locant, backbone).
 
 Stage 3 evidence + recovery (HIGH): per pending entry, gather then verify:
 - `structure_lookup` (PubChem → CID/InChIKey/formula/mass). On a MISS it returns `hint` +
@@ -75,13 +98,39 @@ Two distinct axes — resolve BOTH: (i) ID coverage, (ii) origin.
   Note "azetidine-1-carboxylic acid" in a metabolomics list is likely a locant error for the
   2-isomer (C08267) — flag rather than silently accept the 1-isomer.
 
-Stage 6 `gem_crosswalk` (medium): map accepted KEGG/HMDB/ChEBI → Mouse-GEM MAM.
+Stage 6 `gem_crosswalk` (medium): map accepted KEGG/HMDB/ChEBI → model species. Pass
+`model_path=` for a model other than the configured default; results are stored per model label
+so a second model does not overwrite the first.
+- Do NOT read the xref result as the answer. GEMs annotate lipid species sparsely: a verified
+  Recon3D run crosswalked 8 of 27 by xref while the model actually contained 21 of 28. The
+  `id_gap` count is a property of the annotation, not of the model's content.
 - The result lists `id_gap_with_kegg` — entries with a KEGG that did NOT map. Many are anomer/
   stereo-specific KEGG the GEM lacks (β-D-glucose-6-P C03251 vs generic C00092; β-D-fructose-6-P
   C05345 vs C00085). For each, `search_synonym` the GENERIC KEGG, re-`record_decision`, and
   re-run `gem_crosswalk`.
-- Remaining unmapped: decide id-gap vs model-scope-absent (dipeptides, sugar-phosphates like
-  arabinose-5P, ergothioneine, anserine, pseudouridine are genuinely out-of-model).
+- Every xref miss returns `name_suggestions` — the model's OWN names searched with the entry
+  name plus its deterministic shorthand variants, each carrying an isomer verdict. Work that
+  list with `gem_search` (it also searches formula and mass) and commit with `gem_assign`.
+  This is how the species no identifier reaches are found: GCDCA is `dgchol`
+  "Chenodeoxyglycocholate", the α2,3-sialyl GSL is "Sialyl-3-paragloboside", nLc4Cer is
+  "Lactoneotetraosylceramide", and Recon3D writes glycolipids as sugar compositions.
+- `same_formula_groups` = formula-identical candidates. For LPC 20:4 Recon3D has `pcholar_hs`
+  (arachidonoyl, Δ5,8,11,14) AND `pcholn204_hs` (Δ8,11,14,17, n-3): mass and formula cannot
+  choose. Choose on the biology of the hypothesis and say so in the rationale.
+- Finish EVERY model-relevant entry with a `gem_assign` relation — exact, class-proxy,
+  isomer-surrogate, or model-scope-absent. An unrecorded relation is how a curated mapping ends
+  up living only in a report while the ledger still says id-gap.
+- `class-proxy` (crm_hs, sphmyln_hs, ak2lgchol_hs are R-group pool species) is usable but does
+  not represent chain length or linkage. Watch for MIXED resolution: a ratio with a class-level
+  numerator and a species-level denominator is no longer the ratio the hypothesis stated — say
+  so in the report.
+- `isomer-surrogate` is never an identity. N1-acetylspermine is NOT N1-acetylspermidine
+  (`N1aspmd`, a different backbone) — if you use it anyway, the substitution must travel with
+  every number derived from it.
+- `model-scope-absent` is a RESULT. Record it, with what the model does have instead (Recon3D
+  has 15HPET, 5,15-DiHETE and 14,15-DiHETE but no 15-HETE; no choline plasmalogen at all; no
+  sialyl-6-paragloboside), so the hypotheses that cannot be tested are known rather than
+  silently missing from a table.
 
 Before Stage 7, run `backfill_hmdb` — HMDB rides along with KEGG matching and is otherwise
 under-counted (KEGG and HMDB coverage come out artificially equal); this bridges missing HMDB
@@ -142,17 +191,38 @@ IDs, final_class, confidence, origin, and any verify_candidate formula/mass resu
   incoherent (e.g. origin='drug' but final_class='xenobiotic-excluded').
 
 ## Prioritize the tool-provided flags
-The engine marks risky entries for you — check these FIRST:
-- `exact_match.flagged_auto_accepts` / entry `_flags` contains `auto_accept_review`: a messy/
-  trade-name/ambiguous-token M1 auto-accept. Verify the DB match is the intended compound.
-- entry `_flags` contains `id_gap_try_generic_kegg`: a KEGG that failed GEM crosswalk — check
-  whether it is an anomer/stereo-specific id where a generic KEGG would map.
+The engine marks risky entries for you — check these FIRST (`detect_state` lists open flags):
+- `auto_accept_review`: a messy/trade-name/ambiguous-token M1 auto-accept. Verify the DB match
+  is the intended compound.
+- `id_name_conflict` / `isomer_token_conflict`: the id's own DB name disagrees with the entry
+  name on a discriminant axis. Refute or re-decide — never leave it accepted.
+- `class_level_id`: a generic class entry answering a species-level name. Acceptable ONLY if the
+  entry is reported as class-level.
+- `shared_id_collision` / `hmdb_backfill_conflict`: one identifier on two compounds.
+- `id_gap_try_generic_kegg`: a KEGG that failed GEM crosswalk — check whether it is an anomer/
+  stereo-specific id where a generic KEGG would map.
+Also re-derive these yourself rather than trusting the ledger: run `id_name_check` on any KEGG
+whose provenance is a search or a bridge, and `collision_check` over the whole ledger.
 
 ## Known failure modes to check explicitly
 - Trade-name auto-accept (verify the DB match is the intended compound, not a same-token drug).
+- An id whose own DB record is a different compound (KEGG C05472 = "Urocortisol" accepted for
+  taurochenodeoxycholic acid). Any KEGG from a search or a bridge with no `backcheck` decision
+  in the ledger is unverified — say so.
+- One identifier on two entries (two glycolipids on one PubChem/HMDB entry). If the pair is a
+  ratio's numerator and denominator, the ratio is destroyed: this is refuted, not suspect.
+- Ether vs acyl and species vs class: a P- (plasmenyl) or O- (plasmanyl) lipid carrying an
+  acyl-class id; a class-level id reported as if it were the species. Prefer NO id over a
+  wrong one, and prefer a species-level HMDB over a class-level KEGG.
+- Isomer swaps within a series: neolacto (β1-4) vs lacto (β1-3), α2,3- vs α2,6-sialyl, HETE vs
+  HPETE, mono- vs di-acetyl, spermine vs spermidine. Ask which AXIS was verified; "formula
+  matches" is not an answer, because these isomers are formula-identical.
+- GEM side: an `exact` relation on an R-group pool species (should be class-proxy); a surrogate
+  used without the substitution being stated; a model-relevant entry with no relation recorded
+  at all; `id-gap` reported as if the compound were absent when only the xref is missing.
 - Acylcarnitines / conjugates landing structure-only when a KEGG/HMDB exists under a normalized
   synonym (spacing variant, e.g. "Butyryl carnitine" → "Butyrylcarnitine").
-- InChIKey→anomer KEGG that Mouse-GEM does not carry (prefer generic KEGG for GEM input).
+- InChIKey→anomer KEGG that the GEM does not carry (prefer generic KEGG for GEM input).
 - Origin conflation: a non-biological contaminant (plasticizer/surfactant/LC-MS additive) left in
   the analysable set, OR a real outside-host metabolite (drug/diet/microbial/plant) wrongly
   excluded as xenobiotic instead of kept as 'exogenous'. Confirm origin matches final_class.

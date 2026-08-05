@@ -267,6 +267,7 @@ def generate(workdir: str, out: str | None = None) -> str:
     unm = read_tsv(RUN / "unmapped_harmonization.tsv")
     exo_kept = read_tsv(RUN / "exogenous_kept.tsv")
     xeno = read_tsv(RUN / "xenobiotic_excluded.tsv")
+    gemcur = read_tsv(RUN / "gem_curation.tsv")
 
     title_slide(); kpi_slide(); methods_slide(); flow_slide()
     figure_slide("DB identifier coverage (UpSet)", "5-DB membership across analysable features (union of candidates)", FIG / "db_matching_upset.png")
@@ -295,6 +296,19 @@ def generate(workdir: str, out: str | None = None) -> str:
                      exo_kept, [("original_name", "original"), ("origin", "origin"),
                                 ("ids", "ids"), ("gem_xref", "GEM"), ("reason", "note (full)")],
                      [0.22, 0.13, 0.22, 0.10, 0.33], rows_per_page=9, fontsize=8.5)
+    if gemcur:
+        # The resolution axis a flux design has to know: which markers the model carries AS the
+        # species, which only as a class/pool, which as a surrogate, and which not at all.
+        relsub = " · ".join(f"{k} {v}" for k, v in
+                            Counter(r.get("relation", "") for r in gemcur).most_common())
+        table_slides(f"GEM resolution per marker ({len(gemcur)})",
+                     f"모델 매핑의 해상도 — {relsub}. class-proxy는 사슬·결합양식을 표현하지 못하는 "
+                     "R-group pool species, isomer-surrogate는 다른 화합물로의 대체(해석 시 명시), "
+                     "model-scope-absent는 결과(누락이 아님)",
+                     gemcur, [("original_name", "marker"), ("mam", "model species"),
+                              ("relation", "relation"), ("gem_name", "model name"),
+                              ("rationale", "why (full)")],
+                     [0.20, 0.17, 0.13, 0.20, 0.30], rows_per_page=9, fontsize=8.5)
     if xeno:
         catsub = " · ".join(f"{k} {v}" for k, v in Counter(r["origin"] for r in xeno).most_common())
         table_slides(f"Xenobiotic excluded — non-biological ({len(xeno)})",

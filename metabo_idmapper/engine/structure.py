@@ -17,7 +17,8 @@ _BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
 _HEADERS = {"User-Agent": "metabo-idmapper/0.1 (research)"}
 
 
-def _get(url: str, timeout: int = 30) -> dict | None:
+def get_json(url: str, timeout: int = 30) -> dict | None:
+    """GET a PubChem PUG-REST URL as JSON (throttled); None on any failure."""
     try:
         r = requests.get(url, headers=_HEADERS, timeout=timeout)
         time.sleep(PUBCHEM_DELAY)
@@ -28,10 +29,13 @@ def _get(url: str, timeout: int = 30) -> dict | None:
     return None
 
 
+_get = get_json  # internal alias kept for existing call sites
+
+
 def lookup(name: str) -> dict:
     """Return {found, cid, inchikey, formula, mono_mass, synonyms_sample, source}."""
     q = urllib.parse.quote(name)
-    props = _get(
+    props = get_json(
         f"{_BASE}/compound/name/{q}/property/"
         f"MolecularFormula,InChIKey,MonoisotopicMass,IUPACName/JSON"
     )
@@ -54,7 +58,7 @@ def lookup(name: str) -> dict:
         iupac=p.get("IUPACName"),
     )
     # a few synonyms often carry KEGG/HMDB/ChEBI ids the LLM can hand to bridge_xref
-    syn = _get(f"{_BASE}/compound/cid/{out['cid']}/synonyms/JSON")
+    syn = get_json(f"{_BASE}/compound/cid/{out['cid']}/synonyms/JSON")
     try:
         names = syn["InformationList"]["Information"][0]["Synonym"]
         out["synonyms_sample"] = names[:25]

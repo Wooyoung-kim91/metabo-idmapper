@@ -14,17 +14,72 @@ refuses any accepted ID that no tool produced.
 
 | Deterministic **code** (MCP tools) | **LLM** judgment (the call) |
 |---|---|
-| normalize names; exact DB match; PubChem/KEGG/ChEBI search; BridgeDb xref; molmass formula/mass verify; m/z→mass windows; Mouse-GEM crosswalk; coverage | is a fuzzy/typo/synonym candidate correct? abbreviation expansion? endogenous vs **xenobiotic**? id-gap vs model-scope-absent? confidence tier; isomer disambiguation; final inclusion |
+| normalize names; exact DB match; PubChem/KEGG/ChEBI search; BridgeDb xref; molmass formula/mass verify; m/z→mass windows; **ID→own-DB-record back-check**; **isomer/class token comparison**; **shared-ID detection**; GEM xref crosswalk + **model name/formula/mass search**; coverage | is a fuzzy/typo/synonym candidate correct? abbreviation expansion? endogenous vs **xenobiotic**? which isomer, when the names disagree? is a class-level ID acceptable here? is a model species the compound, a class proxy, a surrogate, or genuinely absent? confidence tier; final inclusion |
 
-## Tools (20)
+## Tools (25)
 
 `midmap_guidance` · `detect_state` · `ingest_names` · `exact_match` · `structure_lookup` ·
 `search_synonym` · `bridge_xref` · `verify_candidate` · `mass_match_candidates` ·
+**`id_name_check`** · **`isomer_guard`** · **`collision_check`** ·
 `screen_exogenous` · `record_decision` · `backfill_hmdb` · `gem_crosswalk` ·
+**`gem_search`** · **`gem_assign`** ·
 `mapping_provenance` · `annotate_source` · `plot_coverage` · `export_code` ·
 `export_report_ppt` · `coverage_summary` · `harness_audit`
 
 Call `midmap_guidance` first for the canonical workflow, confidence tiers (M1–U), and gotchas.
+
+### The wrong-ID problem (why the three verification tools exist)
+
+A missing ID is visible. A **wrong** ID is not — it arrives attached to the right name. Every
+serious error in verified runs was of that kind, and none of them is catchable by comparing
+IDs, or by formula/mass, because the alternatives are formula-identical isomers:
+
+| what happened | what catches it |
+|---|---|
+| a taurochenodeoxycholate entry carrying KEGG `C05472`, whose own KEGG name is **"Urocortisol"** (a cortisol metabolite) — a wrong BridgeDb link | `id_name_check`: ID → its own DB record → compare names |
+| two different glycolipids (Lc3Cer, nLc4Cer) sharing one PubChem/HMDB entry, which **collapses the ratio between them to exactly 1** | `collision_check` |
+| a plasmenyl (vinyl-ether) `LysoPC(P-16:0)` carrying the **1-acyl class** ID | `isomer_guard` / `id_name_check` (`ether_linkage`) |
+| a **neolacto** (β1-4) glycan carrying the **lacto** (β1-3) isomer | `isomer_guard` (`glycan_series`, from KEGG's own linkage wording) |
+
+`isomer_guard` compares two names on the axes that actually decide lipid and glycolipid
+identity — skeleton · ether linkage (P- plasmenyl / O- plasmanyl / 1-acyl) · glycan series and
+length · glycosidic linkages · sialyl linkage (α2,3 vs α2,6) · chains · double-bond positions ·
+omega · oxidation vs **per**oxidation (HETE vs HPETE) · hydroxy count · acetyl count · polyamine
+backbone — and reports whether a name is **species**- or **class**-level. It is pure string
+logic: no network, no lookups. `id_name_check` runs it against the record an ID resolves to;
+`harness_audit` **fails** a run where a searched or bridged KEGG was never back-checked, or
+where an identifier stands for two different compounds.
+
+### Genome-scale model side: search the model, then record HOW it maps
+
+`gem_crosswalk` alone under-reports badly. GEMs annotate lipid species sparsely: a verified
+Recon3D run crosswalked **8 of 27** compounds by xref while the model actually contained **21 of
+28** — under names no identifier reaches (`dgchol` "Chenodeoxyglycocholate" for GCDCA,
+"Sialyl-3-paragloboside", "Lactoneotetraosylceramide", and glycolipids written as sugar
+compositions `(Gal)1 (Glc)1 (GlcNAc)1 (Cer)1`).
+
+So every xref miss now returns `name_suggestions` from the model's **own** names, searched with
+the entry name plus its deterministic lipid-shorthand variants (`LysoPC(16:0)` →
+`1-palmitoyl-sn-glycero-3-phosphocholine`, `nLc4Cer` → `lactoneotetraosylceramide` /
+`paragloboside`, `Glycochenodeoxycholic acid` → `chenodeoxyglycocholate`), each with an isomer
+verdict. `gem_search` searches name / id text / formula / mass directly and returns
+`same_formula_groups` — formula-identical isomer candidates that mass **cannot** separate
+(`pcholar_hs` arachidonoyl Δ5,8,11,14 vs `pcholn204_hs` Δ8,11,14,17 for LPC 20:4).
+
+`gem_assign` then commits the call with an explicit **relation**, per model label, protected
+from being overwritten by a later crosswalk, and refusing any species not in the model:
+
+| relation | meaning for a flux result |
+|---|---|
+| `exact` | the species IS this compound — species-level input |
+| `class-proxy` | only the generic R-group pool species exists (`crm_hs`, `sphmyln_hs`): usable, but chain length/linkage is not represented — report as class-level |
+| `isomer-surrogate` | a **different** species stands in (N1-acetylsperm**ine** → N1-acetylsperm**idine**): not an identity, the substitution travels with every number |
+| `model-scope-absent` | genuinely not in the model — a **result**, so the untestable hypotheses are known |
+| `id-gap` | should be there, nothing has resolved it yet |
+
+Without this axis a curated mapping cannot be stored at all: in the verified run 13 hand-found
+species lived only in a report while the ledger still said `id-gap`. `harness_audit` now warns
+on any model-relevant entry with no recorded relation, and the run emits `gem_curation.tsv`.
 
 ### Origin taxonomy — exogenous vs xenobiotic
 `record_decision` resolves two axes: **ID coverage** (`final_class`) and **provenance**
@@ -51,11 +106,16 @@ own contract*, emitting a per-check **pass / warn / fail** scorecard. It catches
 "defined but not followed": a fabricated ID (accepted but produced by no tool), a mass-only
 **W**-tier candidate used as primary, an incoherent `final_class`↔confidence pair, a fuzzy
 (M2/M3) accept with no recorded formula/mass verification, a locant/anomer-sensitive name
-accepted via a non-exact route and never re-checked, a xenobiotic class excluded
-inconsistently, an origin↔class mismatch, a flagged trade-name auto-accept never reviewed, an
-id-gap KEGG never re-tried,
-a decision with no rationale, entries left pending, a skipped `gem_crosswalk`, or missing
-stage-7 always-emit artifacts. Fix every `fail`; review each `warn`.
+accepted via a non-exact route and never re-checked, **a searched/bridged KEGG never
+back-checked against its own DB record** (`fail`), **an ID that contradicts its own name on a
+discriminant axis and is still accepted** (`fail`), **an identifier shared by two different
+compounds** (`fail`; a shared *class-level* ID is a `warn` instead, since the DB has nothing
+finer), an unresolved HMDB-backfill collision, a xenobiotic class excluded inconsistently, an
+origin↔class mismatch, a flagged trade-name auto-accept never reviewed, an id-gap KEGG never
+re-tried, **a model-relevant entry with no GEM relation recorded**, **a surrogate/proxy species
+used without documenting what it changes**, a decision with no rationale, entries left pending,
+a skipped `gem_crosswalk`, or missing stage-7 always-emit artifacts. Fix every `fail`; review
+each `warn`.
 
 ### Report outputs (always emitted by `coverage_summary`)
 - `master_ledger.tsv`, `coverage_summary.tsv`, `mapping_provenance.tsv`
@@ -64,14 +124,16 @@ stage-7 always-emit artifacts. Fix every `fail`; review each `warn`.
   logic/route (typo fix, synonym search, xref bridge); `unmapped_harmonization.tsv` —
   structure-only entries with the names tried and why mapping failed; `exogenous_kept.tsv` —
   biological outside-host metabolites kept + tagged; `xenobiotic_excluded.tsv` — non-biological
-  contaminants excluded, each with its `origin` + full reason.
+  contaminants excluded, each with its `origin` + full reason; **`gem_curation.tsv`** — per
+  entry the model, species, **relation** (exact / class-proxy / isomer-surrogate /
+  model-scope-absent), whether it was curated, and the rationale.
 - **PPTX report** (`export_report_ppt`): a slide deck built from the run artifacts —
   Title · Coverage KPIs · Methods · Pipeline · UpSet · Improvement · Recovery cause→fix ·
   KEGG/HMDB recovered · Unmapped · Exogenous(kept) · Xenobiotic(excluded) · Outputs.
 - **Annotated source** (`annotate_source`): the ORIGINAL data file with the final ID columns
   appended (`<source>_annotated.xlsx/.tsv`: intensity matrix + ID_kegg / ID_hmdb / ID_chebi /
-  ID_pubchem / ID_inchikey / ID_final_class / ID_origin / ID_gem_mam per compound). Auto-detects
-  the name column; pass `header=` for vendor sheets with a preamble.
+  ID_pubchem / ID_inchikey / ID_final_class / ID_origin / ID_gem_mam / ID_gem_relation per
+  compound). Auto-detects the name column; pass `header=` for vendor sheets with a preamble.
 - **Figures** (`plot_coverage`): `figures/db_matching_upset.png` (5-DB coverage UpSet +
   `enriched_xref.tsv`) and `figures/db_matching_improvement.png` (MetaboAnalyst baseline
   vs current logic).

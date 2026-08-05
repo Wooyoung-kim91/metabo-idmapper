@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from . import collide as _collide
 from .engine import lexicon as _lex
 from .state import (CLASS_FOR_ORIGIN, EXCLUDED_CLASSES, PRIMARY_CLASSES,
                     VALID_ORIGINS, Session)
@@ -105,20 +106,24 @@ def _check_w_tier_not_primary(s: Session) -> tuple[str, str, list]:
 
 def _check_verify_before_fuzzy(s: Session) -> tuple[str, str, list]:
     """Contract (driver): 'keggFind is noisy — NEVER accept a searched KEGG without
-    verify_candidate passing.' A fuzzy-tier (M2/M3) accept needs recorded structure/formula
-    evidence beyond the MetaboAnalyst pass."""
+    verification.' A fuzzy-tier (M2/M3) accept needs recorded evidence beyond the MetaboAnalyst
+    pass. Formula/mass counts — and so does a name-axis check (`id_name_check` back-check or
+    `isomer_guard`), because for isomers it is the STRONGER evidence: the alternatives are
+    formula-identical, and a name-based workflow has no measured mass to compare against."""
     off = []
     for fid, e in s.entries.items():
         if not _decided(e) or e.get("confidence") not in FUZZY_CONF:
             continue
-        cands = e.get("candidates", [])
-        has_evidence = any(c.get("source") != "metaboanalyst" and (c.get("formula") or c.get("mass"))
-                           for c in cands)
-        if not has_evidence:
+        has_mass = any(c.get("source") != "metaboanalyst" and (c.get("formula") or c.get("mass"))
+                       for c in e.get("candidates", []))
+        has_names = any(d.get("action") in ("backcheck", "isomer_guard")
+                        for d in e.get("decisions", []))
+        if not (has_mass or has_names):
             off.append(fid)
     return ("warn" if off else "pass",
-            f"{len(off)} synonym/typo (M2/M3) accept(s) with no recorded formula/mass verification" if off
-            else "fuzzy-tier accepts carry structure/formula verification", off)
+            f"{len(off)} synonym/typo (M2/M3) accept(s) with neither formula/mass nor a "
+            f"name-axis (back-check / isomer) verification recorded" if off
+            else "fuzzy-tier accepts carry formula/mass or name-axis verification", off)
 
 
 def _check_isomer_locant_safety(s: Session) -> tuple[str, str, list]:
@@ -204,12 +209,121 @@ def _check_flagged_auto_accepts_reviewed(s: Session) -> tuple[str, str, list]:
 def _check_id_gap_generic_kegg(s: Session) -> tuple[str, str, list]:
     """Contract (driver): id_gap_try_generic_kegg = a KEGG that failed GEM crosswalk; search a
     generic KEGG and re-crosswalk. Flag entries still carrying a KEGG with no GEM MAM."""
+    # An entry the driver has since RESOLVED — mapped by another route, or deliberately
+    # recorded as model-scope-absent — is no longer an open id-gap, whatever the flag says.
     off = [fid for fid, e in s.entries.items()
            if "id_gap_try_generic_kegg" in _flags(e)
-           and (e.get("accepted") or {}).get("kegg") and not e.get("gem_mam")]
+           and (e.get("accepted") or {}).get("kegg") and not e.get("gem_mam")
+           and e.get("gem_relation") in (None, "id-gap")]
     return ("warn" if off else "pass",
             f"{len(off)} anomer/stereo KEGG still failing GEM crosswalk — try a generic KEGG" if off
             else "no unresolved id-gap-with-KEGG entries", off)
+
+
+def _check_id_backcheck(s: Session) -> tuple[str, str, list]:
+    """Contract: a KEGG accepted through a SEARCH or a BRIDGE has never been confirmed against
+    its own DB record, and that is the one error class no id-to-id or mass check can see (a
+    taurochenodeoxycholate entry carrying C05472 = "Urocortisol"). `id_name_check` must have
+    run for it. An exact (M1) curated name match is its own confirmation and is exempt."""
+    off = []
+    for fid, e in s.entries.items():
+        val = (e.get("accepted") or {}).get("kegg")
+        if not val or e.get("confidence") == "M1":
+            continue
+        srcs = {c.get("source") for c in e.get("candidates", []) if str(c.get("kegg")) == str(val)}
+        indirect = srcs & {"bridgedb", "kegg-search", "pubchem-search", "chebi-ols4", "pubchem"}
+        checked = any(d.get("action") == "backcheck" and d.get("db") == "kegg"
+                      and str(d.get("id")) == str(val) for d in e.get("decisions", []))
+        if indirect and not checked:
+            off.append(f"{fid}:kegg={val}")
+    return ("fail" if off else "pass",
+            f"{len(off)} searched/bridged KEGG id(s) never back-checked against their own DB "
+            f"record (run id_name_check)" if off
+            else "every searched/bridged KEGG id was back-checked against its DB record", off)
+
+
+def _check_id_name_conflicts(s: Session) -> tuple[str, str, list]:
+    """Contract: `id_name_check` / `exact_match` mark an id whose own DB name disagrees with the
+    entry name (`id_name_conflict`, `isomer_token_conflict`). Such an id is the WRONG compound
+    or isomer; keeping it accepted is a hard violation. Cleared by re-deciding the entry after
+    the flag was raised."""
+    off = []
+    for fid, e in s.entries.items():
+        accepted = e.get("accepted") or {}
+        decs = e.get("decisions", [])
+        # a back-checked id that came back 'conflict' and is STILL accepted
+        for d in decs:
+            if d.get("action") == "backcheck" and d.get("verdict") == "conflict":
+                db, idv = d.get("db"), str(d.get("id"))
+                if str(accepted.get(db) or "") == idv:
+                    off.append(f"{fid}:{db}={idv}-still-accepted")
+        # an auto-accept whose DB Match name disagreed and was never re-decided since
+        if "isomer_token_conflict" in _flags(e) and not any(
+                d.get("action") in ("accept", "exclude") for d in decs):
+            off.append(f"{fid}:auto-accepted-isomer-mismatch-not-re-decided")
+    return ("fail" if off else "pass",
+            f"{len(off)} entr(y/ies) whose id contradicts its name on a discriminant axis and "
+            f"was never re-decided" if off
+            else "no unresolved id-vs-name (isomer/class) conflict", off)
+
+
+def _check_id_collisions(s: Session) -> tuple[str, str, list]:
+    """Contract (collision_check): one identifier may not stand for two different compounds.
+    A shared id silently destroys any ratio between the two entries — the verified case being
+    Lc3Cer and nLc4Cer, a marker ratio's numerator and denominator, on one PubChem/HMDB entry."""
+    rows = _collide.scan(s.entries, s.accepted_index())
+    hard = [f"{r['db']}:{r['id']}<-{r['feature_ids']}" for r in rows
+            if r["severity"] == "collision"]
+    soft = [f"{r['db']}:{r['id']}<-{r['feature_ids']}(class-level)" for r in rows
+            if r["severity"] == "class-id-shared"]
+    level = "fail" if hard else ("warn" if soft else "pass")
+    return (level,
+            f"{len(hard)} identifier(s) shared by different compounds; {len(soft)} class-level "
+            f"id(s) shared (legitimate — report those entries as class-level)"
+            if hard or soft else "no identifier is shared by two different compounds",
+            hard + soft)
+
+
+def _check_gem_resolution_recorded(s: Session) -> tuple[str, str, list]:
+    """Contract (gem_assign): every model-relevant entry must carry an explicit relation —
+    exact, class-proxy, isomer-surrogate, or model-scope-absent. 'id-gap'/unset means the
+    question was left open, which is how a curated mapping ends up living only in a report
+    while the ledger still says nothing. Absence recorded deliberately is a PASS."""
+    off = []
+    for fid, e in s.entries.items():
+        if e.get("final_class") not in (PRIMARY_CLASSES | {"exogenous"}):
+            continue
+        rel = e.get("gem_relation")
+        if rel is None:
+            off.append(f"{fid}:no-relation")
+        elif rel == "id-gap":
+            off.append(f"{fid}:id-gap-unresolved")
+    return ("warn" if off else "pass",
+            f"{len(off)} model-relevant entr(y/ies) with no recorded GEM relation "
+            f"(gem_search + gem_assign, or record 'model-scope-absent')" if off
+            else "every model-relevant entry carries an explicit GEM relation", off)
+
+
+def _check_gem_surrogate_documented(s: Session) -> tuple[str, str, list]:
+    """Contract: a surrogate/proxy species changes what a flux number MEANS, so it needs a
+    substantive rationale in the ledger; and two compounds may not both claim one species as
+    'exact' (a shared class-proxy pool is legitimate and not flagged)."""
+    off = []
+    for fid, e in s.entries.items():
+        rel = e.get("gem_relation")
+        if rel in ("isomer-surrogate", "class-proxy"):
+            rec = (e.get("gem") or {}).get(e.get("gem_model") or "", {})
+            if len((rec.get("rationale") or "").strip()) < 20:
+                off.append(f"{fid}:{rel}-undocumented")
+    for mam, fids in sorted(s.gem_index().items()):
+        exact = [f for f in fids if s.entries[f].get("gem_relation") == "exact"]
+        if len(exact) > 1:
+            off.append(f"{mam}:exact-shared-by-{exact}")
+    return ("warn" if off else "pass",
+            f"{len(off)} surrogate/proxy assignment(s) undocumented or one species claimed "
+            f"'exact' by several compounds" if off
+            else "surrogate/proxy assignments are documented and species are not double-claimed",
+            off)
 
 
 def _check_rationale_quality(s: Session) -> tuple[str, str, list]:
@@ -237,8 +351,20 @@ def _check_no_pending(s: Session) -> tuple[str, str, list]:
             else "no pending entries", off[:_CAP])
 
 
+def _check_hmdb_backfill_conflicts(s: Session) -> tuple[str, str, list]:
+    """Contract (backfill_hmdb): a bridged HMDB that is already accepted for another compound
+    is skipped, not shared. The skip is recorded as `hmdb_backfill_conflict` and the entry then
+    needs its own species-specific accession (or none) — it should not be left unexamined."""
+    off = [fid for fid, e in s.entries.items() if "hmdb_backfill_conflict" in _flags(e)
+           and not (e.get("accepted") or {}).get("hmdb")]
+    return ("warn" if off else "pass",
+            f"{len(off)} entr(y/ies) left without HMDB because the only bridged accession "
+            f"belongs to another compound — find the species-specific one" if off
+            else "no unresolved HMDB backfill collision", off)
+
+
 def _check_gem_crosswalk_ran(s: Session) -> tuple[str, str, list]:
-    """Contract: stage 6 maps accepted KEGG/HMDB/ChEBI -> Mouse-GEM MAM. If primary-usable
+    """Contract: stage 6 maps accepted KEGG/HMDB/ChEBI -> model species. If primary-usable
     entries exist but none carry gem_mam or a gem_cause, the crosswalk never ran."""
     primary = [fid for fid, e in s.entries.items() if e.get("final_class") in PRIMARY_CLASSES]
     if not primary:
@@ -255,7 +381,7 @@ def _check_finalize_artifacts(s: Session) -> tuple[str, str, list]:
     DB-matching figures + enriched_xref + raw-API reproduction code. Report which are missing."""
     wd = s.workdir
     required = [
-        "master_ledger.tsv", "coverage_summary.tsv",
+        "master_ledger.tsv", "coverage_summary.tsv", "gem_curation.tsv",
         "kegg_recovered.tsv", "hmdb_recovered.tsv",
         "unmapped_harmonization.tsv", "exogenous_kept.tsv", "xenobiotic_excluded.tsv",
         "enriched_xref.tsv",
@@ -275,10 +401,16 @@ _CHECKS: list[Callable[[Session], tuple[str, str, list]]] = [
     _check_w_tier_not_primary,
     _check_verify_before_fuzzy,
     _check_isomer_locant_safety,
+    _check_id_backcheck,
+    _check_id_name_conflicts,
+    _check_id_collisions,
+    _check_hmdb_backfill_conflicts,
     _check_contaminant_consistency,
     _check_origin_coherence,
     _check_flagged_auto_accepts_reviewed,
     _check_id_gap_generic_kegg,
+    _check_gem_resolution_recorded,
+    _check_gem_surrogate_documented,
     _check_rationale_quality,
     _check_no_pending,
     _check_gem_crosswalk_ran,

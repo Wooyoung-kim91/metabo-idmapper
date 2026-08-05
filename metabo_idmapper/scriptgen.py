@@ -9,7 +9,9 @@ PIPELINE FLOW visible and actually executes it with the raw engines:
            midmap_ledger.json (the reasoning output) and RE-RUN the DB searches
            (KEGGREST / PubChem / ChEBI) with them; molmass-verify
   Stage 4  cross-check the extracted IDs across DBs (BridgeDbR) + HMDB backfill
-  then     classify, GEM crosswalk (COBRApy), coverage figure (matplotlib)
+  Stage 5  back-check every accepted KEGG against its own keggGet record + shared-id scan
+  Stage 6  GEM crosswalk (COBRApy): xref AND a search over the model's own names
+  then     classify, coverage figure (matplotlib)
 
 It reads the run's saved ledger at runtime (per the user's point that the reasoned names
 are already saved), so nothing is hardcoded from the reasoning layer except the recorded
@@ -36,7 +38,7 @@ def _code(text):
 
 def generate_notebook(workdir: str) -> str:
     """Write <workdir>/code/reproduce_mapping.ipynb — the pipeline UNROLLED into linear
-    cells with NO `def`/lambda; raw library APIs only. The 3 raw R engines are written as
+    cells with NO `def`/lambda; raw library APIs only. The 4 raw R engines are written as
     sidecar .R files next to the notebook and called via Rscript."""
     s = Session(workdir)
     outdir = Path(s.workdir) / "code"
@@ -44,6 +46,7 @@ def generate_notebook(workdir: str) -> str:
     (outdir / "ma.R").write_text((RSCRIPT_DIR / "metaboanalyst_map.R").read_text())
     (outdir / "bridge.R").write_text((RSCRIPT_DIR / "bridge_xref.R").read_text())
     (outdir / "kegg.R").write_text((RSCRIPT_DIR / "kegg_search.R").read_text())
+    (outdir / "keggent.R").write_text((RSCRIPT_DIR / "kegg_entry.R").read_text())
 
     setup = (
         "# ══ 01_SETUP ═════════════════════════════════════════════════════════════════════\n"
@@ -220,18 +223,62 @@ def generate_notebook(workdir: str) -> str:
         "print('rows:', len(rows))"
     )
 
+    backcheck = (
+        "# ══ 07_BACK-CHECK — 확정 KEGG의 '자기 자신' 레코드 대조 (raw KEGGREST keggGet) ═══\n"
+        "# INPUT   : rows(assemble)의 kegg, code/keggent.R(raw KEGGREST).\n"
+        "# DOES    : id -> 그 id의 KEGG NAME/FORMULA를 받아 이름과 대조. name->id 경로로는\n"
+        "#           절대 안 잡히는 오류(맞는 이름에 붙어 온 틀린 id)를 여기서 잡는다.\n"
+        "#           검증된 사례: C05472의 KEGG 이름은 'Urocortisol'(담즙산이 아님).\n"
+        "# OUTPUT  : kegg_entries{id: {names, formula}}, backcheck_rows(이름 불일치 후보).\n"
+        "# REUSED  : 리포트의 '판정 근거', class-level 여부(= 종/클래스 해상도) 판정.\n"
+        "req = {'ids': sorted({r['kegg'] for r in rows if r.get('kegg')}), 'out': str(OUT / '_ke.json')}\n"
+        "subprocess.run([RSCRIPT, '--vanilla', str(CODE / 'keggent.R')], input=json.dumps(req),\n"
+        "               capture_output=True, text=True)\n"
+        "kegg_entries = {e['kegg']: e for e in json.load(open(OUT / '_ke.json'))}\n"
+        "# class-level 지표: DB 이름이 사슬 없이 1-acyl/alkyl 같은 총칭이면 그 id는 클래스 엔트리\n"
+        "backcheck_rows = []\n"
+        "for r in rows:\n"
+        "    ke = kegg_entries.get(r.get('kegg') or '')\n"
+        "    if not ke or not ke.get('found'): continue\n"
+        "    names = ke['names'] if isinstance(ke['names'], list) else [ke['names']]\n"
+        "    r['kegg_name'] = names[0] if names else ''\n"
+        "    generic = any(re.search(r'\\b\\d?-?acyl\\b|\\balkyl\\b', n, re.I) and\n"
+        "                  not re.search(r'\\d{1,2}:\\d', n) for n in names)\n"
+        "    r['kegg_resolution'] = 'class' if generic else 'species'\n"
+        "    backcheck_rows.append({'feature_id': r['feature_id'], 'name': r['name'],\n"
+        "                           'kegg': r['kegg'], 'kegg_name': r['kegg_name'],\n"
+        "                           'resolution': r['kegg_resolution'],\n"
+        "                           'formula': ke.get('formula')})\n"
+        "print('back-checked:', len(backcheck_rows),\n"
+        "      '| class-level ids:', sum(1 for b in backcheck_rows if b['resolution'] == 'class'))\n"
+        "# 같은 id를 두 화합물이 공유하는지 (비를 1로 붕괴시키는 조용한 오류)\n"
+        "shared = defaultdict(list)\n"
+        "for r in rows:\n"
+        "    for db in ('kegg', 'hmdb'):\n"
+        "        if r.get(db): shared[(db, r[db])].append(r['name'])\n"
+        "print('shared ids:', {k: v for k, v in shared.items() if len(v) > 1})"
+    )
+
     gem = (
-        "# ══ 07_GEM CROSSWALK — Mouse-GEM MAM (raw COBRApy) ══════════════════════════════\n"
-        "# INPUT   : rows(assemble), GEM_MODEL(Mouse-GEM SBML).\n"
-        "# DOES    : 확정 KEGG/HMDB/ChEBI xref로 GEM 대사물질(MAM) 매핑.\n"
-        "# OUTPUT  : rows[*]['gem_mam'].\n"
+        "# ══ 08_GEM CROSSWALK — 모델 species (raw COBRApy: xref + 이름/분자식 직접 조회) ══\n"
+        "# INPUT   : rows(assemble), GEM_MODEL(SBML/JSON).\n"
+        "# DOES    : (a) KEGG/HMDB/ChEBI xref 매핑, (b) xref 미스는 모델의 name/formula를\n"
+        "#           직접 조회. GEM은 지질 species에 xref를 거의 달지 않으므로 (b)가 없으면\n"
+        "#           '모델에 있는데 없다'고 오판한다(검증 런: xref 8/27, 실제 보유 21/28).\n"
+        "# OUTPUT  : rows[*]['gem_mam'], rows[*]['gem_route'], gem_name_hits.\n"
         "# REUSED  : 하류 대사모델 flux(E-Flux/GIMME) 입력, master_ledger.tsv.\n"
-        "# GEM crosswalk (raw COBRApy): accepted KEGG/HMDB/ChEBI -> Mouse-GEM MAM base ids\n"
-        "model = cobra.io.read_sbml_model(GEM_MODEL)\n"
+        "model = cobra.io.read_sbml_model(GEM_MODEL) if str(GEM_MODEL).endswith('.xml') \\\n"
+        "    else cobra.io.load_json_model(GEM_MODEL)\n"
         "idx = {'kegg': defaultdict(set), 'hmdb': defaultdict(set), 'chebi': defaultdict(set)}\n"
+        "meta = {}\n"
         "keymap = {'kegg': 'kegg.compound', 'hmdb': 'hmdb', 'chebi': 'chebi'}\n"
         "for m in model.metabolites:\n"
-        "    base = re.sub(r'[a-z]$', '', m.id)\n"
+        "    # compartment 접미사는 두 관례가 있다: MAM01234c 와 tdchola_c.\n"
+        "    # 'lowercase 한 글자 제거'만 하면 후자가 'tdchola_'가 되어 accession이 깨진다.\n"
+        "    comp = str(getattr(m, 'compartment', '') or '')\n"
+        "    base = (m.id[:-len(comp)].rstrip('_') if comp and m.id.endswith(comp) else\n"
+        "            re.sub(r'_[a-z]{1,2}$|[a-z]$', '', m.id))\n"
+        "    rec = meta.setdefault(base, {'name': m.name or '', 'formula': getattr(m, 'formula', None)})\n"
         "    for db, k in keymap.items():\n"
         "        v = m.annotation.get(k)\n"
         "        if v is None: continue\n"
@@ -243,11 +290,37 @@ def generate_notebook(workdir: str) -> str:
         "            else:\n"
         "                idx[db][x].add(base)\n"
         "for r in rows:\n"
-        "    r['gem_mam'] = ''\n"
+        "    r['gem_mam'] = ''; r['gem_route'] = ''\n"
         "    for db in ('kegg', 'hmdb', 'chebi'):\n"
         "        if r.get(db) and idx[db].get(str(r[db])):\n"
-        "            r['gem_mam'] = ';'.join(sorted(idx[db][str(r[db])])); break\n"
-        "print('GEM-mapped:', sum(1 for r in rows if r['gem_mam']))"
+        "            r['gem_mam'] = ';'.join(sorted(idx[db][str(r[db])]))\n"
+        "            r['gem_route'] = 'xref:' + db; break\n"
+        "print('GEM-mapped by xref:', sum(1 for r in rows if r['gem_mam']))\n"
+        "# (b) xref 미스 -> 모델 이름 직접 조회(문자 트라이그램 Dice). 화학명은 교착적이라\n"
+        "#     토큰 겹침이 0이 되므로(Glycochenodeoxycholic acid vs Chenodeoxyglycocholate)\n"
+        "#     n-gram 유사도가 유일한 도달 경로다. 후보만 제시하고 채택은 사람이 판단.\n"
+        "model_grams = {}\n"
+        "for b, v in meta.items():\n"
+        "    fl = re.sub(r'[^a-z0-9]', '', (v['name'] or '').lower())\n"
+        "    if fl: model_grams[b] = {fl[i:i+3] for i in range(max(len(fl) - 2, 0))}\n"
+        "gem_name_hits = {}\n"
+        "for r in rows:\n"
+        "    if r['gem_mam'] or not r.get('name'): continue\n"
+        "    fq = re.sub(r'[^a-z0-9]', '', (r['harmonized'] or r['name']).lower())\n"
+        "    qg = {fq[i:i+3] for i in range(max(len(fq) - 2, 0))}\n"
+        "    scored = []\n"
+        "    for b, g in model_grams.items():\n"
+        "        if not qg or not g: continue\n"
+        "        dice = 2 * len(qg & g) / (len(qg) + len(g))\n"
+        "        if dice > 0.4: scored.append((round(dice, 3), b))\n"
+        "    scored.sort(reverse=True)\n"
+        "    gem_name_hits[r['feature_id']] = [\n"
+        "        {'mam_base': b, 'gem_name': meta[b]['name'], 'formula': meta[b]['formula'],\n"
+        "         'dice': d,\n"
+        "         'pool_species': bool(meta[b]['formula'] and re.search(r'[RX]', str(meta[b]['formula'])))}\n"
+        "        for d, b in scored[:5]]\n"
+        "print('name-search candidates for', sum(1 for v in gem_name_hits.values() if v),\n"
+        "      'xref-missed features (pool_species=True는 R-group 총칭 = class-level 입력)')"
     )
 
     writeout = (
@@ -256,7 +329,8 @@ def generate_notebook(workdir: str) -> str:
         "# REUSED  : 대사체 통계/네트워크의 ID 조인, joint pathway(KEGG/HMDB), 리포트.\n"
         "# write master_ledger.tsv\n"
         "cols = ['feature_id', 'name', 'harmonized', 'final_class', 'confidence',\n"
-        "        'kegg', 'hmdb', 'chebi', 'pubchem', 'inchikey', 'gem_mam']\n"
+        "        'kegg', 'kegg_name', 'kegg_resolution', 'hmdb', 'chebi', 'pubchem',\n"
+        "        'inchikey', 'gem_mam', 'gem_route']\n"
         "with open(OUT / 'master_ledger.tsv', 'w', newline='') as f:\n"
         "    w = csv.writer(f, delimiter='\\t'); w.writerow(cols)\n"
         "    for r in rows: w.writerow([r.get(c, '') for c in cols])\n"
@@ -312,7 +386,9 @@ def generate_notebook(workdir: str) -> str:
                 "**PubChem** PUG-REST, **molmass**, **COBRApy**, **matplotlib**). No tool wrappers, "
                 "no `def`. Flow: **1)** MetaboAnalyst 1st pass → **2)** extract unmapped → "
                 "**3)** rename-rule re-search with the SAVED harmonized names → **4)** BridgeDb "
-                "cross-check + HMDB backfill → classify → GEM crosswalk → coverage figure.\n\n"
+                "cross-check + HMDB backfill → classify → **back-check every KEGG against its "
+                "own keggGet record (+ shared-id scan)** → GEM crosswalk **by xref AND by the "
+                "model's own names** → coverage figure.\n\n"
                 "Run this notebook from the run workdir (or its `code/`); it reads "
                 "`midmap_ledger.json`.\n\n"
                 "## 파일 맵 (어디서 왔고 / 무엇을 만들고 / 어디서 다시 쓰나)\n\n"
@@ -320,7 +396,8 @@ def generate_notebook(workdir: str) -> str:
                 "- `midmap_ledger.json` ← 이 run의 ledger. 작성: driver 세션(record_decision 등). "
                 "원본 이름은 `Metabolomics/Atheroclerosis_metabolite.xlsx`의 Compound 열(→ ledger에 반영). "
                 "여기엔 normalize·candidates(source별 harmonized query)·accepted·decisions가 담김.\n"
-                "- `code/ma.R`,`bridge.R`,`kegg.R` ← metabo-idmapper 번들 raw R 엔진.\n"
+                "- `code/ma.R`,`bridge.R`,`kegg.R`,`keggent.R` ← metabo-idmapper 번들 raw R 엔진 "
+                "(마지막은 keggGet 백체크용).\n"
                 "- `BRIDGE_DB`(metabolites_20210109.bridge) ← BridgeDb(figshare). "
                 "`GEM_MODEL`(Mouse-GEM.xml) ← Mouse-GEM v1.8.0.\n\n"
                 "**산출물**\n"
@@ -337,8 +414,11 @@ def generate_notebook(workdir: str) -> str:
             _md("## 03_Stage 2 — extract the unmapped"), _code(stage2),
             _md("## 04_Stage 3 — rename-rule ID extraction (re-search saved harmonized names)"), _code(stage3),
             _md("## 05_Stage 4 — cross-check across DBs (BridgeDb) + HMDB backfill"), _code(stage4),
-            _md("## 06_Assemble + GEM crosswalk + coverage figure"), _code(assemble), _code(gem),
-            _code(writeout), _code(upset),
+            _md("## 06_Assemble"), _code(assemble),
+            _md("## 07_Back-check — 확정 KEGG를 그 id의 KEGG 레코드와 대조 (틀린 id / 공유 id 검출)"),
+            _code(backcheck),
+            _md("## 08_GEM crosswalk — xref + 모델 이름 직접 조회, then coverage figure"),
+            _code(gem), _code(writeout), _code(upset),
         ],
         "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python",
                                     "name": "python3"},
@@ -356,11 +436,12 @@ def generate(workdir: str) -> str:
     ma_r = (RSCRIPT_DIR / "metaboanalyst_map.R").read_text()
     bridge_r = (RSCRIPT_DIR / "bridge_xref.R").read_text()
     kegg_r = (RSCRIPT_DIR / "kegg_search.R").read_text()
+    keggent_r = (RSCRIPT_DIR / "kegg_entry.R").read_text()
 
     code = _TEMPLATE
     code = code.replace("@@BRIDGE_DB@@", BRIDGE_DB).replace("@@GEM_MODEL@@", GEM_MODEL)
     code = code.replace("@@MA_R@@", ma_r).replace("@@BRIDGE_R@@", bridge_r)
-    code = code.replace("@@KEGG_R@@", kegg_r)
+    code = code.replace("@@KEGG_R@@", kegg_r).replace("@@KEGGENT_R@@", keggent_r)
 
     outdir = Path(s.workdir) / "code"
     outdir.mkdir(exist_ok=True)
@@ -379,7 +460,13 @@ Shows and runs the real flow:
      midmap_ledger.json and RE-RUN the DB searches (KEGGREST/PubChem/ChEBI) with them,
      molmass-verify
   4) cross-check the extracted IDs across DBs (BridgeDbR) + HMDB backfill
-  then classify, GEM crosswalk (COBRApy), coverage figure (matplotlib).
+  5) back-check every accepted KEGG against its OWN keggGet record (name/formula) and scan
+     for identifiers held by more than one compound — the two error classes a name->id
+     pipeline cannot see (a wrong id arrives attached to the right name; a shared id
+     silently collapses the ratio between two features)
+  6) GEM crosswalk (COBRApy) by xref AND by the model's own names — GEMs annotate lipid
+     species sparsely, so the xref route alone reports a model as lacking compounds it has
+  then classify, coverage figure (matplotlib).
 
 No metabo_idmapper import, no tool function names. The reasoning layer's disambiguation
 and exclusions are READ from the saved ledger (not re-derived).
@@ -410,6 +497,7 @@ DBS = ["kegg", "hmdb", "chebi", "pubchem", "inchikey"]
 _MA_R = r"""@@MA_R@@"""
 _BRIDGE_R = r"""@@BRIDGE_R@@"""
 _KEGG_R = r"""@@KEGG_R@@"""
+_KEGGENT_R = r"""@@KEGGENT_R@@"""
 
 
 def _run_r(snippet, payload, timeout=1200):
@@ -466,13 +554,22 @@ def mono_mass(formula):
 
 
 def gem_crosswalk(rows):
-    """RAW COBRApy: accepted KEGG/HMDB/ChEBI -> Mouse-GEM MAM base ids."""
+    """RAW COBRApy: accepted KEGG/HMDB/ChEBI -> model species base ids, then a name search
+    over the model's own names for everything the xref route missed (GEMs annotate lipid
+    species sparsely: a verified Recon3D run got 8/27 by xref while the model held 21/28)."""
     import cobra
-    model = cobra.io.read_sbml_model(GEM_MODEL)
+    model = (cobra.io.load_json_model(GEM_MODEL) if str(GEM_MODEL).endswith(".json")
+             else cobra.io.read_sbml_model(GEM_MODEL))
     idx = {"kegg": defaultdict(set), "hmdb": defaultdict(set), "chebi": defaultdict(set)}
+    meta = {}
     key = {"kegg": "kegg.compound", "hmdb": "hmdb", "chebi": "chebi"}
     for m in model.metabolites:
-        base = re.sub(r"[a-z]$", "", m.id)
+        # two compartment conventions: MAM01234c and tdchola_c. Dropping one trailing
+        # lowercase letter turns the latter into "tdchola_", which is not an accession.
+        comp = str(getattr(m, "compartment", "") or "")
+        base = (m.id[: -len(comp)].rstrip("_") if comp and m.id.endswith(comp)
+                else re.sub(r"_[a-z]{1,2}$|[a-z]$", "", m.id))
+        meta.setdefault(base, {"name": m.name or "", "formula": getattr(m, "formula", None)})
         for db, k in key.items():
             v = m.annotation.get(k)
             if v is None: continue
@@ -485,10 +582,82 @@ def gem_crosswalk(rows):
                     idx[db][x].add(base)
     for r in rows:
         r["gem_mam"] = ""
+        r["gem_route"] = ""
         for db in ("kegg", "hmdb", "chebi"):
             if r.get(db) and idx[db].get(str(r[db])):
-                r["gem_mam"] = ";".join(sorted(idx[db][str(r[db])])); break
-    return rows
+                r["gem_mam"] = ";".join(sorted(idx[db][str(r[db])]))
+                r["gem_route"] = "xref:" + db
+                break
+    gem_name_hits = gem_name_search(rows, meta)
+    return rows, gem_name_hits
+
+
+def _trigrams(text):
+    flat = re.sub(r"[^a-z0-9]", "", (text or "").lower())
+    return {flat[i:i + 3] for i in range(max(len(flat) - 2, 0))}
+
+
+def gem_name_search(rows, meta, min_dice=0.4, top=5):
+    """Candidate model species for xref-missed rows, by character-trigram Dice over the
+    model's own names. Chemical names are agglutinative — "Glycochenodeoxycholic acid" and
+    the model's "Chenodeoxyglycocholate" share no whole token — so n-gram similarity is the
+    only route that reaches them. Candidates only: the pick is a judgement, and a
+    pool_species (R-group formula) is a CLASS-level input, not the species."""
+    model_grams = {b: _trigrams(v["name"]) for b, v in meta.items() if v["name"]}
+    hits = {}
+    for r in rows:
+        if r.get("gem_mam") or not r.get("name"):
+            continue
+        qg = _trigrams(r.get("harmonized") or r["name"])
+        scored = []
+        for b, g in model_grams.items():
+            if not qg or not g:
+                continue
+            dice = 2 * len(qg & g) / (len(qg) + len(g))
+            if dice > min_dice:
+                scored.append((round(dice, 3), b))
+        scored.sort(reverse=True)
+        hits[r["feature_id"]] = [
+            {"mam_base": b, "gem_name": meta[b]["name"], "formula": meta[b]["formula"],
+             "dice": d, "pool_species": bool(meta[b]["formula"]
+                                             and re.search(r"[RX]", str(meta[b]["formula"])))}
+            for d, b in scored[:top]]
+    return hits
+
+
+def kegg_backcheck(rows):
+    """RAW KEGGREST keggGet: fetch what each accepted KEGG id ITSELF resolves to.
+
+    name->id searching cannot detect a wrong id, because the wrong id arrives attached to the
+    right name. The id's own KEGG NAME field can: C05472's is "Urocortisol", not a bile acid.
+    """
+    ids = sorted({r["kegg"] for r in rows if r.get("kegg")})
+    if not ids:
+        return {}
+    res = _run_r(_KEGGENT_R, {"ids": ids}) or []
+    entries = {e["kegg"]: e for e in res}
+    for r in rows:
+        e = entries.get(r.get("kegg") or "")
+        if not e or not e.get("found"):
+            continue
+        names = e["names"] if isinstance(e["names"], list) else [e["names"]]
+        r["kegg_name"] = names[0] if names else ""
+        # a generic acyl/alkyl name with no chain spec means the id is a CLASS entry
+        r["kegg_resolution"] = "class" if any(
+            re.search(r"\b\d?-?acyl\b|\balkyl\b", n, re.I) and not re.search(r"\d{1,2}:\d", n)
+            for n in names) else "species"
+    return entries
+
+
+def shared_id_scan(rows):
+    """Identifiers held by more than one compound. A shared id is silent and destroys any
+    ratio between the two features (verified: two glycolipids on one PubChem/HMDB entry)."""
+    seen = defaultdict(list)
+    for r in rows:
+        for db in ("kegg", "hmdb", "chebi", "pubchem", "inchikey"):
+            if r.get(db):
+                seen[(db, str(r[db]))].append(r["name"])
+    return {k: v for k, v in seen.items() if len(v) > 1}
 
 
 # ========================================================================== helpers
@@ -613,11 +782,30 @@ def main():
         rows.append(row)
 
     print("=" * 70)
-    print("05_GEM crosswalk (COBRApy) + coverage figure (matplotlib)")
+    print("05_back-check every accepted KEGG against its own keggGet record")
     try:
-        gem_crosswalk(rows)
+        kegg_backcheck(rows)
+        klass = sum(1 for r in rows if r.get("kegg_resolution") == "class")
+        print(f"  back-checked {sum(1 for r in rows if r.get('kegg_name'))} ids; "
+              f"{klass} are CLASS-level entries (report them as such)")
+        shared = shared_id_scan(rows)
+        print("  identifiers held by >1 compound:", shared or "none")
+    except Exception as ex:
+        print("  back-check skipped:", ex)
+
+    print("=" * 70)
+    print("06_GEM crosswalk (COBRApy xref + model-name search) + coverage figure")
+    gem_name_hits = {}
+    try:
+        _, gem_name_hits = gem_crosswalk(rows)
+        print(f"  xref-mapped {sum(1 for r in rows if r.get('gem_mam'))}; "
+              f"name-search candidates for {sum(1 for v in gem_name_hits.values() if v)} "
+              "xref-missed features")
     except Exception as ex:
         print("  GEM skipped:", ex)
+    if gem_name_hits:
+        with open(OUT / "gem_name_candidates.json", "w") as f:
+            json.dump(gem_name_hits, f, indent=1)
     _write_outputs(rows)
     _plot_upset(rows)
     print("done -> master_ledger.tsv, enriched_xref.tsv, figures/db_matching_upset.png")
@@ -625,7 +813,8 @@ def main():
 
 def _write_outputs(rows):
     cols = ["feature_id", "name", "harmonized", "final_class", "confidence",
-            "kegg", "hmdb", "chebi", "pubchem", "inchikey", "gem_mam"]
+            "kegg", "kegg_name", "kegg_resolution", "hmdb", "chebi", "pubchem",
+            "inchikey", "gem_mam", "gem_route"]
     with open(OUT / "master_ledger.tsv", "w", newline="") as f:
         w = csv.writer(f, delimiter="\t"); w.writerow(cols)
         for r in rows: w.writerow([r.get(c, "") for c in cols])

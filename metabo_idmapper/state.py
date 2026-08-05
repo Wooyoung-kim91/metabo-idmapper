@@ -16,6 +16,21 @@ from typing import Any
 
 LEDGER_NAME = "midmap_ledger.json"
 
+# identifier namespaces an entry can carry (order = report/column order)
+ID_KEYS = ("kegg", "hmdb", "chebi", "pubchem", "inchikey")
+
+# --- GEM relation axis: HOW an entry relates to the species recorded for a model ---
+# exact             the model species IS this compound.
+# class-proxy       the model carries only the generic class/pool (R-group) species: usable,
+#                   but chain length / linkage is not represented — report it as class-level.
+# isomer-surrogate  a DIFFERENT but closely related species stands in. Never an identity:
+#                   the substitution must be stated wherever the flux result is used.
+# model-scope-absent the compound is genuinely not in the model (not a mapping failure).
+# id-gap            the compound should be in the model but no route resolved it yet.
+GEM_RELATIONS = {"exact", "class-proxy", "isomer-surrogate", "model-scope-absent", "id-gap"}
+GEM_MAPPED_RELATIONS = {"exact", "class-proxy", "isomer-surrogate"}
+GEM_UNMAPPED_RELATIONS = {"model-scope-absent", "id-gap"}
+
 # --- final_class vocabulary (ID-coverage / inclusion axis) ---
 PRIMARY_CLASSES = {"KEGG-mapped", "HMDB-mapped"}      # endogenous, primary-usable (pathway/flux)
 EXCLUDED_CLASSES = {"xenobiotic-excluded"}            # non-biological contaminant -> dropped
@@ -49,8 +64,13 @@ class Entry:
     final_class: str | None = None
     confidence: str | None = None
     origin: str | None = None  # endogenous | diet/drug/microbial/plant | contaminant/industrial/additive/...
-    gem_mam: list[str] = field(default_factory=list)
+    gem_mam: list[str] = field(default_factory=list)      # active model's species (base ids)
     gem_cause: str | None = None
+    gem_relation: str | None = None   # exact | class-proxy | isomer-surrogate | absent | id-gap
+    gem_model: str | None = None      # label of the model gem_mam/gem_relation refer to
+    gem_curated: bool = False         # set by gem_assign; gem_crosswalk must not overwrite it
+    gem: dict[str, Any] = field(default_factory=dict)     # per-model-label results
+    gem_candidates: list[dict[str, Any]] = field(default_factory=list)  # gem_search evidence
     decisions: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -117,3 +137,26 @@ class Session:
 
     def pending_ids(self) -> list[str]:
         return [fid for fid, e in self.entries.items() if not e.get("final_class")]
+
+    def accepted_index(self) -> dict[tuple[str, str], list[str]]:
+        """{(db, id): [feature_id, ...]} over ACCEPTED ids — the basis for collision checks.
+
+        Two different compounds holding one identifier is not a cosmetic problem: when the
+        two are the numerator and denominator of a ratio, the ratio collapses to 1.
+        """
+        idx: dict[tuple[str, str], list[str]] = {}
+        for fid, e in self.entries.items():
+            for db, val in (e.get("accepted") or {}).items():
+                if val:
+                    idx.setdefault((db, str(val)), []).append(fid)
+        return idx
+
+    def gem_index(self, label: str | None = None) -> dict[str, list[str]]:
+        """{model species base id: [feature_id, ...]} for the given model label (or active)."""
+        idx: dict[str, list[str]] = {}
+        for fid, e in self.entries.items():
+            rec = (e.get("gem") or {}).get(label) if label else None
+            mams = (rec or {}).get("mam") if rec else e.get("gem_mam") or []
+            for m in mams or []:
+                idx.setdefault(str(m), []).append(fid)
+        return idx

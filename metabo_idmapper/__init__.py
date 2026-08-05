@@ -9,4 +9,4 @@ Engine reuses the verified `metabolite-id-harmonization` skill logic (BridgeDb /
 / MetaboAnalystR / PubChem / molmass / COBRApy). See guidance.CANONICAL for the workflow.
 """
 
-__version__ = "0.0.1"
+__version__ = "0.2.0"
