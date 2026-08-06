@@ -147,7 +147,7 @@ def test_harness_audit_origin_coherence():
         assert any("exogenous-untagged" in o for o in by["origin_coherence"]["offenders"])
 
 
-def test_coverage_emits_db_matching_figures():
+def test_finalize_run_orders_stage7_and_coverage_stays_pure():
     import os
     with tempfile.TemporaryDirectory() as d:
         tools.ingest_names(d, names=["Taurine", "Glucose", "Erucamide"])
@@ -157,11 +157,18 @@ def test_coverage_emits_db_matching_figures():
                                                   "hmdb": "HMDB0000251", "pubchem": "1123"})
         s.save()
         tools.record_decision(d, "M0000", rationale="t", accepted={"kegg": "C00245"})
-        out = tools.coverage_summary(d)  # figures=True default
-        assert "figures" in out
-        assert os.path.exists(os.path.join(d, "figures", "db_matching_upset.png"))
-        assert os.path.exists(os.path.join(d, "figures", "db_matching_improvement.png"))
-        assert os.path.exists(os.path.join(d, "enriched_xref.tsv"))
+        # coverage_summary computes and writes ITS OWN two tables — nothing else
+        cov = tools.coverage_summary(d)
+        assert cov["total"] == 3 and "figures" not in cov and "provenance" not in cov
+        assert os.path.exists(os.path.join(d, "master_ledger.tsv"))
+        assert not os.path.exists(os.path.join(d, "figures", "db_matching_upset.png"))
+        # finalize_run is where the stage-7 ORDER lives
+        out = tools.finalize_run(d)
+        assert out["steps_failed"] == []
+        assert out["steps_run"] == ["coverage", "figures", "provenance", "code"]
+        for rel in ("figures/db_matching_upset.png", "figures/db_matching_improvement.png",
+                    "enriched_xref.tsv", "gem_curation.tsv", "code/reproduce_mapping.py"):
+            assert os.path.exists(os.path.join(d, rel)), rel
 
 
 def test_server_registers_all_tools():
@@ -171,8 +178,8 @@ def test_server_registers_all_tools():
             "backfill_hmdb", "plot_coverage", "mapping_provenance", "gem_crosswalk",
             "export_code", "annotate_source", "export_report_ppt", "coverage_summary",
             "harness_audit", "id_name_check", "isomer_guard", "collision_check",
-            "gem_search", "gem_assign", "acknowledge_flag"} <= names
-    assert len(names) == 26
+            "gem_search", "gem_assign", "acknowledge_flag", "finalize_run"} <= names
+    assert len(names) == 27
 
 
 def test_harness_audit_scorecard():
@@ -584,6 +591,50 @@ def test_flags_are_derived_and_acknowledgeable():
         st = tools.detect_state(d)
         assert "class_level_id" not in st["flags"]["open"]
         assert st["flags"]["self_resolved"]["class_level_id"] == 1
+
+
+def test_raw_engine_is_the_single_source_for_reproduction_code():
+    """The reproduction artifacts must COPY the engine, not restate it.
+
+    The same logic written once per emitter is what drifted before: a model base-id bug had
+    to be fixed in the engine, the notebook cell strings and the script template separately.
+    """
+    import ast
+    import py_compile
+    from metabo_idmapper.codegen import raw_engine
+
+    # the module is real, importable and testable — that is the whole point
+    assert raw_engine.base_id("tdchola_c", "c") == "tdchola"
+    assert raw_engine.base_id("MAM01234c", "c") == "MAM01234"
+    assert raw_engine.base_id("met__L_c", None) == "met__L"
+    assert raw_engine.trigrams("abcd") == {"abc", "bcd"}
+    shared = raw_engine.shared_id_scan([{"name": "Lc3Cer", "kegg": "C1"},
+                                        {"name": "nLc4Cer", "kegg": "C1"},
+                                        {"name": "Taurine", "kegg": "C2"}])
+    assert shared == {("kegg", "C1"): ["Lc3Cer", "nLc4Cer"]}
+    # and it depends on nothing from the package that ships it
+    tree = ast.parse(pathlib_Path(raw_engine.__file__).read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.level == 0 and not (node.module or "").startswith("metabo_idmapper")
+        if isinstance(node, ast.Import):
+            assert not any(a.name.startswith("metabo_idmapper") for a in node.names)
+
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Taurine"])
+        out = tools.export_code(d)
+        engine_src = pathlib_Path(raw_engine.__file__).read_text()
+        # the script inlines that exact source; the notebook ships it as a sidecar
+        assert engine_src in pathlib_Path(out["script"]).read_text()
+        sidecar = pathlib_Path(d) / "code" / "raw_engine.py"
+        assert sidecar.read_text() == engine_src
+        py_compile.compile(str(sidecar), doraise=True)
+        # both artifacts drive the SAME call surface, so neither can drift from the other
+        nb_src = pathlib_Path(out["notebook"]).read_text()
+        for fn in ("build_model_index", "gem_name_search", "apply_kegg_backcheck",
+                   "shared_id_scan", "write_master"):
+            assert f"raw.{fn}(" in nb_src
+            assert f"raw.{fn}(" in pathlib_Path(out["script"]).read_text()
 
 
 def test_export_code_is_raw_api_and_compiles():

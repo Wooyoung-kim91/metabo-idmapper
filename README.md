@@ -16,7 +16,7 @@ refuses any accepted ID that no tool produced.
 |---|---|
 | normalize names; exact DB match; PubChem/KEGG/ChEBI search; BridgeDb xref; molmass formula/mass verify; m/z→mass windows; **ID→own-DB-record back-check**; **isomer/class token comparison**; **shared-ID detection**; GEM xref crosswalk + **model name/formula/mass search**; coverage | is a fuzzy/typo/synonym candidate correct? abbreviation expansion? endogenous vs **xenobiotic**? which isomer, when the names disagree? is a class-level ID acceptable here? is a model species the compound, a class proxy, a surrogate, or genuinely absent? confidence tier; final inclusion |
 
-## Tools (26)
+## Tools (27)
 
 `midmap_guidance` · `detect_state` · `ingest_names` · `exact_match` · `structure_lookup` ·
 `search_synonym` · `bridge_xref` · `verify_candidate` · `mass_match_candidates` ·
@@ -24,7 +24,7 @@ refuses any accepted ID that no tool produced.
 `screen_exogenous` · `record_decision` · `backfill_hmdb` · `gem_crosswalk` ·
 **`gem_search`** · **`gem_assign`** ·
 `mapping_provenance` · `annotate_source` · `plot_coverage` · `export_code` ·
-`export_report_ppt` · `coverage_summary` · `harness_audit`
+`export_report_ppt` · `coverage_summary` · **`finalize_run`** · `harness_audit`
 
 Call `midmap_guidance` first for the canonical workflow, confidence tiers (M1–U), and gotchas.
 
@@ -127,7 +127,7 @@ ids in the verified run.
 
 ### Governance harness (`harness_audit`)
 A **read-only** self-audit — the metabo-idmapper counterpart to a run harness — that makes no
-identity call and changes nothing. Run it **last** (after `coverage_summary`): it reads the
+identity call and changes nothing. Run it **last** (after `finalize_run`): it reads the
 ledger + emitted artifacts and checks that the reasoning layer actually *honored this project's
 own contract*, emitting a per-check **pass / warn / fail** scorecard. It catches rules that were
 "defined but not followed": a fabricated ID (accepted but produced by no tool), a mass-only
@@ -144,7 +144,7 @@ used without documenting what it changes**, a decision with no rationale, entrie
 a skipped `gem_crosswalk`, or missing stage-7 always-emit artifacts. Fix every `fail`; review
 each `warn`.
 
-### Report outputs (always emitted by `coverage_summary`)
+### Report outputs (`finalize_run` emits all of these in order)
 - `master_ledger.tsv`, `coverage_summary.tsv`, `mapping_provenance.tsv`
 - **Provenance tables** (`mapping_provenance`): `kegg_recovered.tsv` / `hmdb_recovered.tsv` —
   what was mapped BEYOND the MetaboAnalyst 1st pass, with the harmonized name, id, and the
@@ -167,11 +167,19 @@ each `warn`.
 - **Reproduction code** (`export_code`): `code/reproduce_mapping.py` (+ `.ipynb`) — standalone
   reproductions using the ORIGINAL library APIs (MetaboAnalystR / BridgeDbR / KEGGREST via
   Rscript, PubChem PUG-REST, molmass, COBRApy, matplotlib), NOT the tool wrappers. They make
-  the flow explicit and RUN it: Stage 1 MetaboAnalyst 1st pass → Stage 2 extract unmapped →
-  Stage 3 re-run KEGG/PubChem searches with the harmonized names READ from the saved ledger →
-  Stage 4 BridgeDb cross-check + HMDB backfill → GEM crosswalk → figure. The `.ipynb` is
-  unrolled into linear cells (no `def`) with per-cell input-source / output / reuse comments;
-  the 3 raw R engines ship as `code/{ma,bridge,kegg}.R` sidecars.
+  the flow explicit and RUN it: 1 MetaboAnalyst 1st pass → 2 extract unmapped → 3 re-run
+  KEGG/PubChem searches with the harmonized names READ from the saved ledger → 4 BridgeDb
+  cross-check + HMDB backfill → **5 back-check every accepted KEGG against its own keggGet
+  record + shared-id scan** → **6 model crosswalk by xref AND by the model's own names** →
+  7 master table + coverage figure.
+
+  Both artifacts are generated from **one** implementation, `codegen/raw_engine.py` — a real,
+  unit-tested module with no dependency on this package. The script inlines it verbatim; the
+  notebook ships it as a sidecar beside the four `code/*.R` engines and keeps its cells linear
+  (no `def`) with per-cell input / output / reuse comments. That single source exists because
+  the logic used to be written out once per emitter, and one model base-id bug then had to be
+  fixed in three places; a test now asserts the emitted artifacts copy the engine rather than
+  restate it.
 
 ## Reasoning layer (embedded in the MCP)
 
@@ -181,7 +189,7 @@ prompts and two resources, placed at the stages where judgment actually lives:
 | role | MCP prompt | resource | placed at |
 |---|---|---|---|
 | **driver** — drive the tools end-to-end, own the identity CALLs | `map_metabolites` | `metabo-idmapper://driver` | all stages (judgment in 3 & 5) |
-| **reviewer** — adversarially verify accepted identities + exclusions | `review_mappings` | `metabo-idmapper://reviewer` | after `record_decision`, before `coverage_summary` |
+| **reviewer** — adversarially verify accepted identities + exclusions | `review_mappings` | `metabo-idmapper://reviewer` | after `record_decision`, before `finalize_run` |
 
 Connect the server and invoke the `map_metabolites` prompt to become the driver; it invokes
 `review_mappings` before finalizing. No config symlinks — the whole reasoning layer travels

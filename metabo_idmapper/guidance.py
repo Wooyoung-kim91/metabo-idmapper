@@ -113,14 +113,18 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
                     coverage is not under-counted relative to KEGG. Run before coverage. It
                     SKIPS an accession already accepted for another compound and reports it in
                     `skipped_conflicts` — resolve those, do not share an accession.
-7. coverage_summary — write the master ledger + coverage + provenance, and ALWAYS emit:
+7. finalize_run   — stage 7 in ONE call, in order: coverage_summary (master ledger +
+                    coverage tables) then ALWAYS emit:
                     DB-matching figures (db_matching_upset.png + enriched_xref.tsv;
                     db_matching_improvement.png); recovery-provenance tables
                     (mapping_provenance: kegg_recovered / hmdb_recovered / unmapped); and a
                     raw-API reproduction script (export_code → code/reproduce_mapping.py,
                     written with MetaboAnalystR/BridgeDbR/KEGGREST/PubChem/molmass/COBRApy/
                     matplotlib — NOT the tool wrappers). Each also runs standalone.
-8. harness_audit  — READ-ONLY governance scorecard. Run LAST (after coverage_summary):
+                    Each step is also its own tool and runs standalone; finalize_run is the
+                    ORDER written down, not a computation with side effects — `coverage_summary`
+                    alone computes the numbers and writes only its own two tables.
+8. harness_audit  — READ-ONLY governance scorecard. Run LAST (after finalize_run):
                     verifies the reasoning layer honored THIS contract — no fabricated ID, no
                     mass-only (W) candidate used as primary, final_class↔confidence coherent,
                     fuzzy (M2/M3) accepts verified, locant-sensitive names re-checked, every

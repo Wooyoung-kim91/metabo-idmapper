@@ -143,7 +143,8 @@ under-counted (KEGG and HMDB coverage come out artificially equal); this bridges
 for KEGG-only/structure-only entries so HMDB coverage reflects its true (larger) DB. It does
 not change KEGG assignments; a structure-only entry that gains HMDB becomes HMDB-mapped.
 
-Stage 7 `coverage_summary`: write master ledger + coverage + provenance, and ALWAYS emit
+Stage 7 `finalize_run`: one call that runs the stage-7 order — `coverage_summary`
+(master ledger + coverage tables; it computes and writes ONLY those) and then
 (a) the DB-matching figures (`figures/db_matching_upset.png` 5-DB UpSet + `enriched_xref.tsv`;
 `figures/db_matching_improvement.png` MetaboAnalyst-baseline vs current-logic), (b) the
 provenance tables via `mapping_provenance` (kegg_recovered / hmdb_recovered /
@@ -157,11 +158,11 @@ run, call `export_report_ppt` (Coverage · Methods · figures · recovery cause�
 exogenous vs xenobiotic) — a presentation-ready summary built from the same artifacts.
 
 ## Review gate
-Before `coverage_summary`, invoke the `review_mappings` prompt (the reviewer role) on the
+Before `finalize_run`, invoke the `review_mappings` prompt (the reviewer role) on the
 ledger and RE-DECIDE any entry it marks suspect/refuted.
 
 ## Governance gate (run LAST)
-After `coverage_summary`, run `harness_audit` — a read-only scorecard that checks you actually
+After `finalize_run`, run `harness_audit` — a read-only scorecard that checks you actually
 honored this contract (no fabricated ID, no W-tier used as primary, coherent tiers, verified
 fuzzy accepts, locant safety, consistent exclusion, flagged auto-accepts reviewed, id-gap KEGG
 re-tried, rationales present, nothing pending, artifacts emitted). Resolve every `fail` and

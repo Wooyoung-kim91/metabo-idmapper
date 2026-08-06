@@ -370,7 +370,7 @@ def _check_finalize_artifacts(s: Session) -> tuple[str, str, list]:
     ]
     missing = [f for f in required if not (wd / f).exists()]
     return ("warn" if missing else "pass",
-            f"{len(missing)} stage-7 always-emit artifact(s) missing (run coverage_summary)" if missing
+            f"{len(missing)} stage-7 always-emit artifact(s) missing (run finalize_run)" if missing
             else "all stage-7 always-emit artifacts are present", missing)
 
 
