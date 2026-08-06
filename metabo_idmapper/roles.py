@@ -22,7 +22,9 @@ tool did not return — `record_decision` refuses it.
    real but unfixable (KEGG only has a class-level entry), `acknowledge_flag` with a reason;
    that is a recorded decision, and the run should end with no open `action` flag.
    One writing tool at a time per workdir: a call that finds the ledger changed underneath it
-   returns `error_code: "ledger_conflict"`, writes nothing, and must be repeated.
+   returns `error_code: "ledger_conflict"`, writes nothing, and must be repeated. Every failure
+   carries an `error_code` — read it: `engine_failed` (an R/REST engine died) is NOT evidence
+   that a compound has no id, and `not_backed` means gather evidence, not rephrase the call.
 
 ## Stage placement (judgment concentrates in stage 3 and stage 5)
 
@@ -165,8 +167,9 @@ ledger and RE-DECIDE any entry it marks suspect/refuted.
 After `finalize_run`, run `harness_audit` — a read-only scorecard that checks you actually
 honored this contract (no fabricated ID, no W-tier used as primary, coherent tiers, verified
 fuzzy accepts, locant safety, consistent exclusion, flagged auto-accepts reviewed, id-gap KEGG
-re-tried, rationales present, nothing pending, artifacts emitted). Resolve every `fail` and
-review each `warn` before you report the run as finished.
+re-tried, rationales present, nothing pending, artifacts emitted). Resolve every `fail`. Review each `warn`: fix it, or — when it is
+the DB's limit rather than a defect — `acknowledge_check` with a reason, which shows as ACK,
+stops counting toward the verdict, and lapses automatically if that check's offenders change.
 
 ## Report
 Final class distribution, primary-usable count, GEM-mapped count, entries changed after

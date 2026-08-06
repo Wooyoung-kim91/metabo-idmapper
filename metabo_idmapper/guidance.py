@@ -38,6 +38,19 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
 - One judgement at a time; record it with `record_decision` so the ledger stays the
   authoritative provenance trail.
 
+## When a tool fails (act on the code, not the sentence)
+Every failure comes back as data: `{error, error_code, means, suggested_next_tools}`.
+- invalid_state    a prerequisite has not run — run the suggested tool, then repeat.
+- unknown_entry    no such feature_id — check detect_state; never invent one.
+- invalid_argument the call cannot be satisfied as written — fix it; retrying it unchanged
+                   fails identically.
+- not_backed       anti-fabrication refusal (an id, or a model species, no tool produced) —
+                   gather the evidence first.
+- engine_failed    an external engine (Rscript / MetaboAnalystR / BridgeDb / REST) failed.
+                   This is NOT a data verdict: do not record "no id exists" because of it.
+- ledger_conflict  another call wrote this workdir first and nothing was written here.
+- export_failed    an artifact could not be written; the mapping and its tables are unaffected.
+
 ## Ledger + review flags (how state behaves)
 - One ledger per workdir, and each tool call REPLACES it. A call that finds the file changed
   underneath it returns `error_code: "ledger_conflict"` and writes NOTHING — re-read the state
@@ -53,6 +66,9 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
   class-level entry for three lyso-PC species), `acknowledge_flag` records WHY it is
   acceptable, and it is then reported as acknowledged — never silently dropped.
 - Finish a run with no open `action` flag: every one is either resolved or acknowledged.
+- The same applies one level up: a harness WARN you have reviewed and accepted goes into
+  `acknowledge_check` with a reason, is shown as ACK, and stops counting toward the verdict —
+  and lapses by itself if that check's offenders change. A `fail` can never be acknowledged.
 
 ## Stages (run only what the request needs; `detect_state` tells you what is pending)
 1. ingest_names   — load + normalize raw names into the session ledger. Flags
@@ -113,17 +129,19 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
                     coverage is not under-counted relative to KEGG. Run before coverage. It
                     SKIPS an accession already accepted for another compound and reports it in
                     `skipped_conflicts` — resolve those, do not share an accession.
-7. finalize_run   — stage 7 in ONE call, in order: coverage_summary (master ledger +
-                    coverage tables) then ALWAYS emit:
+7. finalize_run   — stage 7 in ONE call, in order (`what=[...]` selects steps; default is
+                    everything but the deck): coverage_summary (master ledger + coverage
+                    tables) then
                     DB-matching figures (db_matching_upset.png + enriched_xref.tsv;
                     db_matching_improvement.png); recovery-provenance tables
                     (mapping_provenance: kegg_recovered / hmdb_recovered / unmapped); and a
                     raw-API reproduction script (export_code → code/reproduce_mapping.py,
                     written with MetaboAnalystR/BridgeDbR/KEGGREST/PubChem/molmass/COBRApy/
                     matplotlib — NOT the tool wrappers). Each also runs standalone.
-                    Each step is also its own tool and runs standalone; finalize_run is the
-                    ORDER written down, not a computation with side effects — `coverage_summary`
-                    alone computes the numbers and writes only its own two tables.
+                    Any single step still runs alone — `finalize_run(what=["figures"])`,
+                    `what=["ppt"]` for the slide deck. finalize_run is the ORDER written down,
+                    not a computation with side effects: `coverage_summary` alone computes the
+                    numbers and writes only its own two tables.
 8. harness_audit  — READ-ONLY governance scorecard. Run LAST (after finalize_run):
                     verifies the reasoning layer honored THIS contract — no fabricated ID, no
                     mass-only (W) candidate used as primary, final_class↔confidence coherent,

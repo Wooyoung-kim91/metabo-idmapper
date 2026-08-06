@@ -15,6 +15,7 @@ Each check maps to a specific metabo-idmapper invariant — see the docstring on
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any, Callable
 
 from . import collide as _collide
@@ -30,6 +31,12 @@ KEPT_CLASSES = PRIMARY_CLASSES | {"structure-only", "exogenous"}
 VALID_CONF = {"M1", "M2", "M3", "M4", "W", "X", "U"}
 FUZZY_CONF = {"M2", "M3"}          # verified synonym / typo — evidence is REQUIRED first
 _LEVELS = {"pass": 0, "warn": 1, "fail": 2}
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 _CAP = 25                           # cap offender lists so the summary stays small
 
 
@@ -398,6 +405,46 @@ _CHECKS: list[Callable[[Session], tuple[str, str, list]]] = [
 ]
 
 
+def fingerprint(offenders: list) -> str:
+    """A stable digest of what a check is currently complaining about.
+
+    An acknowledgement is a judgement about a SITUATION ("these three lyso-PC species share
+    KEGG's only class-level entry"), not a permanent exemption for the check. Tying it to the
+    offenders means a new violation re-opens the check by itself.
+    """
+    import hashlib
+    joined = "|".join(sorted(str(o) for o in offenders))
+    return hashlib.sha256(joined.encode()).hexdigest()[:16]
+
+
+def acknowledge_check(workdir: str, check: str, why: str, who: str = "reasoning-layer") -> dict:
+    """Record that a WARN was reviewed and is acceptable, with the reason. Never for a `fail`."""
+    s = Session(workdir)
+    current = {fn.__name__.removeprefix("_check_"): fn(s) for fn in _CHECKS}
+    if check not in current:
+        return {"error": f"unknown check '{check}'", "error_code": "invalid_argument",
+                "checks": sorted(current)}
+    level, summary, offenders = current[check]
+    if level == "fail":
+        return {"error": f"'{check}' is a FAIL — a hard contract violation cannot be "
+                         "acknowledged, only fixed", "error_code": "invalid_argument",
+                "summary": summary, "offenders": offenders[:_CAP]}
+    if level == "pass":
+        return {"error": f"'{check}' currently passes — nothing to acknowledge",
+                "error_code": "invalid_argument"}
+    if len((why or "").strip()) < 12:
+        return {"error": "an acknowledgement needs a reason (>=12 chars) stating what makes "
+                         "this acceptable and how it is handled downstream",
+                "error_code": "invalid_argument"}
+    rec = {"why": why.strip(), "who": who, "ts": _now(), "level": level,
+           "fingerprint": fingerprint(offenders), "offenders": offenders[:_CAP]}
+    s.data.setdefault("acknowledged_checks", {})[check] = rec
+    s.save()
+    return {"check": check, "acknowledged": rec,
+            "note": "reported as ACK in harness_audit and excluded from the verdict. It lapses "
+                    "automatically if this check's offenders change."}
+
+
 def audit(workdir: str) -> dict[str, Any]:
     """Run the full governance scorecard over a session. Read-only."""
     s = Session(workdir)
@@ -411,22 +458,45 @@ def audit(workdir: str) -> dict[str, Any]:
                 "scorecard": ["WARN  ingest — empty ledger, nothing to audit"],
                 "note": "read-only governance audit; no ledger state was changed."}
 
+    acks = s.data.get("acknowledged_checks") or {}
     checks: list[dict] = []
-    score = {"pass": 0, "warn": 0, "fail": 0}
+    score = {"pass": 0, "warn": 0, "fail": 0, "acknowledged": 0}
     for fn in _CHECKS:
         level, summary, offenders = fn(s)
+        name = fn.__name__.removeprefix("_check_")
+        row = {"check": name, "level": level, "summary": summary,
+               "offenders": offenders[:_CAP]}
+        ack = acks.get(name)
+        if ack and level == "warn":
+            # An acknowledgement covers the state it was given, not the check forever: if the
+            # offenders change, something NEW is being waved through, so it counts again.
+            if ack.get("fingerprint") == fingerprint(offenders):
+                row["acknowledged"] = ack
+                row["effective_level"] = "pass"
+                score["acknowledged"] += 1
+            else:
+                row["stale_acknowledgement"] = ack
+                row["summary"] += (" — a previous acknowledgement no longer applies: the "
+                                   "offenders changed since it was recorded")
         score[level] += 1
-        checks.append({"check": fn.__name__.removeprefix("_check_"), "level": level,
-                       "summary": summary, "offenders": offenders[:_CAP]})
+        checks.append(row)
 
     flag_state = _flags.summary(s)
-    verdict = max(checks, key=lambda c: _LEVELS[c["level"]])["level"]
-    scorecard = [f"{c['level'].upper():5} {c['check']} — {c['summary']}" for c in checks]
+    verdict = max((c.get("effective_level") or c["level"] for c in checks),
+                  key=lambda lv: _LEVELS[lv])
+    scorecard = [f"{'ACK' if c.get('acknowledged') else c['level'].upper():5} {c['check']} — "
+                 f"{c['summary']}" for c in checks]
     return {
         "workdir": str(s.workdir), "n_entries": n,
         "verdict": verdict, "score": score, "flags": flag_state,
         "checks": checks, "scorecard": scorecard,
-        "note": "flags.acknowledged are flags a human/driver deliberately accepted, with the "
+        "acknowledged_checks": {c["check"]: c["acknowledged"]["why"] for c in checks
+                                if c.get("acknowledged")},
+        "note": "an ACK check is a warn the driver deliberately accepted (acknowledge_check) "
+                "with the reason on the record; it stops counting toward the verdict but is "
+                "still shown, and the acknowledgement lapses if its offenders change. A `fail` "
+                "can never be acknowledged. "
+                "flags.acknowledged are flags a human/driver deliberately accepted, with the "
                 "reason on the record — they are reported, not hidden. read-only governance "
                 "audit; no ledger state was changed. verdict = worst "
                 "check level. fail = a hard contract violation (fix before finalizing); "

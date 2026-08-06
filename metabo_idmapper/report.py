@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from . import errors as _err
 from . import flags as _flags
 from .engine import lexicon as _lex
 from .state import ALL_CLASSES, PRIMARY_CLASSES, Session
@@ -201,7 +202,9 @@ def annotate_source(workdir: str, source: str | None = None, sheet: "str | int" 
         sheet = rec["sheet"]
     name_column = name_column or rec.get("column")
     if not source:
-        return {"error": "no source file (pass source=... ; ingest_names records it when xlsx= used)"}
+        return _err.fail("invalid_argument",
+                         "no source file to annotate — pass source=... "
+                         "(ingest_names records it when called with xlsx=)")
     df = pd.read_excel(source, sheet_name=sheet, header=header)
     col = name_column
     if col is None or col not in df.columns:
@@ -253,7 +256,7 @@ def export_code(workdir: str) -> dict:
         script = scriptgen.generate(workdir)
         notebook = scriptgen.generate_notebook(workdir)
     except Exception as e:
-        return {"error": f"scriptgen failed: {type(e).__name__}: {e}"}
+        return _err.fail("export_failed", f"scriptgen failed: {type(e).__name__}: {e}")
     return {"script": script, "notebook": notebook,
             "note": "raw-API reproduction; no metabo_idmapper import."}
 
@@ -267,7 +270,7 @@ def export_report_ppt(workdir: str, out: str | None = None) -> dict:
     try:
         path = report_ppt.generate(workdir, out=out)
     except Exception as e:
-        return {"error": f"ppt export failed: {type(e).__name__}: {e}"}
+        return _err.fail("export_failed", f"ppt export failed: {type(e).__name__}: {e}")
     return {"pptx": path, "note": "values read from run artifacts; no fabrication."}
 
 
@@ -279,7 +282,7 @@ def plot_coverage(workdir: str) -> dict:
         up = _plots.upset(workdir)
         imp = _plots.improvement(workdir)
     except Exception as e:  # never let a plotting error break the run
-        return {"error": f"plot failed: {type(e).__name__}: {e}"}
+        return _err.fail("export_failed", f"plot failed: {type(e).__name__}: {e}")
     return {"upset": up, "improvement": imp}
 
 
@@ -357,40 +360,57 @@ def coverage_summary(workdir: str, export: bool = True) -> dict:
     return summary
 
 
-def finalize_run(workdir: str, figures: bool = True, provenance: bool = True,
-                 code: bool = True, annotate: bool = True) -> dict:
-    """Stage 7: emit everything a finished run is read through, in one call.
+def finalize_run(workdir: str, what: list[str] | None = None) -> dict:
+    """Stage 7: emit the artifacts a finished run is read through — ONE tool, explicit order.
 
-    coverage_summary -> DB-matching figures -> provenance + GEM-curation tables -> raw-API
-    reproduction code -> the original data file with the ID columns appended (when ingest read
-    an xlsx). Each step is its own tool and still runs standalone; this is the ORDER, written
-    down as a tool instead of hidden inside the coverage computation.
+    `what` selects the steps (default: everything except the slide deck):
 
-    A step that fails is reported in place and does not abort the rest — a broken figure must
-    not cost you the ledger table. Run `harness_audit` after this.
+      coverage          master_ledger.tsv + coverage_summary.tsv
+      figures           figures/db_matching_upset.png + _improvement.png + enriched_xref.tsv
+      provenance        kegg_recovered / hmdb_recovered / unmapped_harmonization /
+                        exogenous_kept / xenobiotic_excluded / gem_curation .tsv
+      code              code/reproduce_mapping.py + .ipynb + the raw R and Python engines
+      annotated_source  the ORIGINAL data file with the ID columns appended (needs an xlsx
+                        ingest); skipped silently when this run has no source file
+      ppt               metabolite_id_mapping_report.pptx (opt in: `what=[..., "ppt"]`)
+
+    These were five separate tools; as one they cost the reasoning layer one name instead of
+    five, and the ORDER is written down rather than implied. A step that fails is reported in
+    place and does not abort the rest — a broken figure must not cost you the ledger table.
+    Run `harness_audit` after this.
     """
-    out: dict = {"workdir": str(Session(workdir).workdir)}
-    steps = [("coverage", lambda: coverage_summary(workdir))]
-    if figures:
-        steps.append(("figures", lambda: plot_coverage(workdir)))
-    if provenance:
-        steps.append(("provenance", lambda: mapping_provenance(workdir)))
-    if code:
-        steps.append(("code", lambda: export_code(workdir)))
-    if annotate and Session(workdir).data.get("source", {}).get("xlsx"):
-        steps.append(("annotated_source", lambda: annotate_source(workdir)))
+    s = Session(workdir)
+    steps = {
+        "coverage": lambda: coverage_summary(workdir),
+        "figures": lambda: plot_coverage(workdir),
+        "provenance": lambda: mapping_provenance(workdir),
+        "code": lambda: export_code(workdir),
+        "annotated_source": lambda: annotate_source(workdir),
+        "ppt": lambda: export_report_ppt(workdir),
+    }
+    default = ["coverage", "figures", "provenance", "code", "annotated_source"]
+    want = list(what) if what else default
+    unknown = [w for w in want if w not in steps]
+    if unknown:
+        return _err.fail("invalid_argument",
+                         f"unknown step(s) {unknown}; choose from {sorted(steps)}")
+    if "annotated_source" in want and not s.data.get("source", {}).get("xlsx"):
+        want = [w for w in want if w != "annotated_source"]   # nothing was ingested from a file
+
+    out: dict = {"workdir": str(s.workdir)}
     failed = []
-    for name, step in steps:
+    for name in want:
         try:
-            out[name] = step()
+            out[name] = steps[name]()
         except Exception as ex:                      # one broken step must not lose the rest
-            out[name] = {"error": f"{type(ex).__name__}: {ex}"}
+            out[name] = _err.fail("export_failed", f"{type(ex).__name__}: {ex}")
+        # the emitters catch their own failures too, so read the result rather than the raise
+        if isinstance(out[name], dict) and out[name].get("error_code"):
             failed.append(name)
-    out["steps_run"] = [n for n, _ in steps]
+    out["steps_run"] = want
     out["steps_failed"] = failed
     out["note"] = ("stage-7 artifacts emitted. Run harness_audit last: it checks that these "
                    "exist AND that the reasoning layer honored the contract."
-                   + (f" FAILED: {failed} — re-run those tools individually." if failed else ""))
+                   + (f" FAILED: {out['steps_failed']} — the mapping is unaffected; re-run "
+                      "those steps with what=[...]." if failed else ""))
     return out
-
-

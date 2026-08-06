@@ -12,10 +12,13 @@ import functools
 from pathlib import Path
 
 from . import collide as _collide
+from . import errors as _err
 from . import flags as _flags
 from . import guidance as _guidance
-from .report import (annotate_source, coverage_summary, export_code, export_report_ppt,
-                     finalize_run, mapping_provenance, plot_coverage)
+# Reporting lives in report.py; only the two entry points are registered as tools (the rest
+# are reachable through finalize_run(what=[...]) — five names the reasoning layer no longer
+# has to hold).
+from .report import coverage_summary, finalize_run
 from .config import BRIDGE_DB, GEM_MODEL
 from .engine import chebi as _chebi
 from .engine import entry as _entry
@@ -108,7 +111,8 @@ def ingest_names(workdir: str, names: list[str] | None = None,
         names = [str(x) for x in df[col].dropna().tolist()]
         s.data["source"] = {"xlsx": str(xlsx), "sheet": sheet, "column": col}
     if not names:
-        return {"error": "no names provided (pass names=[...] or xlsx=...&column=...)"}
+        return _err.fail("invalid_argument",
+                         "no names provided — pass names=[...] or xlsx=...&column=...")
 
     flagged = []
     xeno = []
@@ -156,7 +160,8 @@ def exact_match(workdir: str, feature_ids: list[str] | None = None,
     work = str((Path(s.workdir) / "_metaboanalyst_work").resolve())
     r = run_r("metaboanalyst_map.R", {"names": list(q_by_name), "workdir": work})
     if not r["ok"]:
-        return {"error": "MetaboAnalyst failed", **r}
+        return _err.fail("engine_failed", "MetaboAnalystR did not return a mapping",
+                         ["structure_lookup", "search_synonym"], **r)
     accepted = matched = 0
     flagged: list[dict] = []
     isomer_flagged: list[dict] = []
@@ -232,7 +237,7 @@ def structure_lookup(workdir: str, feature_id: str, name: str | None = None) -> 
     s = Session(workdir)
     e = s.get(feature_id)
     if e is None:
-        return {"error": f"unknown feature_id {feature_id}"}
+        return _err.unknown_entry(feature_id)
     query = name or e["normalized"].get("normalized") or e["original_name"]
     res = _struct.lookup(query)
     if res["found"]:
@@ -269,14 +274,15 @@ def search_synonym(workdir: str, feature_id: str, queries: list[str] | None = No
     s = Session(workdir)
     e = s.get(feature_id)
     if e is None:
-        return {"error": f"unknown feature_id {feature_id}"}
+        return _err.unknown_entry(feature_id)
     queries = list(queries or [])
     if expand_shorthand:
         base = _entry_query_name(e)
         queries += [base] + _short.variants(base) + _short.variants(e["original_name"])
     queries = list(dict.fromkeys(q for q in queries if q and q.strip()))
     if not queries:
-        return {"error": "pass queries=[...] (or expand_shorthand=True to derive them)"}
+        return _err.fail("invalid_argument",
+                         "no query strings — pass queries=[...] or expand_shorthand=True")
     dbs = dbs or ["kegg", "pubchem", "chebi"]
     found = {"kegg": [], "pubchem": [], "chebi": []}
     if "kegg" in dbs:
@@ -327,14 +333,21 @@ def bridge_xref(workdir: str | None, queries: list[dict], db: str | None = None)
     {kegg,hmdb,chebi,pubchem,inchikey}. If feature_id + workdir are given, bridged ids
     are attached to that entry as a 'bridgedb' candidate.
     """
+    db = db or BRIDGE_DB
+    if not db:
+        return _err.fail("invalid_argument",
+                         "no BridgeDb database: pass db=<path to metabolites_*.bridge>, or set "
+                         "METABO_IDMAP_BRIDGE_DB",
+                         ["structure_lookup", "search_synonym"])
     payload_q = []
     for q in queries:
         payload_q.append({
             "id": q["id"], "source": _SRC.get(q["source"], q["source"]),
             "targets": [_SRC.get(t, t) for t in q["targets"]]})
-    r = run_r("bridge_xref.R", {"db": db or BRIDGE_DB, "queries": payload_q})
+    r = run_r("bridge_xref.R", {"db": db, "queries": payload_q})
     if not r["ok"]:
-        return {"error": "BridgeDb failed", **r}
+        return _err.fail("engine_failed", "BridgeDbR did not return a mapping",
+                         ["structure_lookup", "search_synonym"], **r)
     # normalize back to short keys
     inv = {v: k for k, v in _SRC.items()}
     out = []
@@ -352,7 +365,7 @@ def bridge_xref(workdir: str | None, queries: list[dict], db: str | None = None)
             s.add_candidate(q["feature_id"], cand)
     if s:
         s.save()
-    return {"results": out, "db": db or BRIDGE_DB}
+    return {"results": out, "db": db}
 
 
 def verify_candidate(proposed_formula: str | None = None,
@@ -462,7 +475,9 @@ def id_name_check(workdir: str | None = None, feature_ids: list[str] | None = No
                         "id resolves to a different compound/isomer than the name."}
 
     if not workdir:
-        return {"error": "pass workdir (+ optional feature_ids) or ids=[{db,id,name}]"}
+        return _err.fail("invalid_argument",
+                         "pass workdir (+ optional feature_ids), or ids=[{db,id,name}] "
+                         "for an ad-hoc check")
     s = Session(workdir)
     targets = [(fid, s.entries[fid]) for fid in (feature_ids or list(s.entries))
                if fid in s.entries]
@@ -744,10 +759,11 @@ def record_decision(workdir: str, feature_id: str, rationale: str,
     s = Session(workdir)
     e = s.get(feature_id)
     if e is None:
-        return {"error": f"unknown feature_id {feature_id}"}
+        return _err.unknown_entry(feature_id)
     final_class = LEGACY_CLASSES.get(final_class, final_class)  # accept old 'exogenous-excluded'
     if final_class and final_class not in ALL_CLASSES:
-        return {"error": f"final_class must be one of {sorted(ALL_CLASSES)}"}
+        return _err.fail("invalid_argument",
+                         f"final_class must be one of {sorted(ALL_CLASSES)}")
     accepted = accepted or {}
     warnings = []
 
@@ -794,7 +810,9 @@ def record_decision(workdir: str, feature_id: str, rationale: str,
     try:
         fc = _commit(s, feature_id, accepted, confidence or "M2", rationale, final_class, origin=origin)
     except ValueError as ex:
-        return {"error": str(ex)}
+        return _err.fail("not_backed", str(ex),
+                         ["structure_lookup", "search_synonym", "bridge_xref"],
+                         feature_id=feature_id)
     if fc in (PRIMARY_CLASSES | {"structure-only", "exogenous"}):
         tags = _lex.xenobiotic_hits(e["original_name"])
         if tags and fc != "xenobiotic-excluded":
@@ -857,17 +875,34 @@ def acknowledge_flag(workdir: str, feature_id: str, flag: str, why: str) -> dict
     s = Session(workdir)
     e = s.get(feature_id)
     if e is None:
-        return {"error": f"unknown feature_id {feature_id}"}
+        return _err.unknown_entry(feature_id)
     res = _flags.acknowledge(e, flag, why)
     if "error" in res:
-        raised = sorted((e.get("flags") or {}))
-        return {**res, "flags_on_this_entry": raised,
-                "open_now": _flags.open_flags(e, s)}
+        return _err.fail("invalid_argument", res["error"], ["detect_state"],
+                         flags_on_this_entry=sorted((e.get("flags") or {})),
+                         open_now=_flags.open_flags(e, s))
     s.add_decision(feature_id, "acknowledge_flag", why, flag=flag)
     s.save()
     return {"feature_id": feature_id, **res, "open_now": _flags.open_flags(e, s),
             "note": "reported as an acknowledged flag in detect_state and harness_audit — it "
                     "is a decision on the record, not a suppression."}
+
+
+def acknowledge_check(workdir: str, check: str, why: str) -> dict:
+    """Record that a harness WARN was reviewed and is acceptable as it stands, with the reason.
+
+    Some warnings are not defects to repair: three lyso-PC species sharing KEGG's only
+    class-level entry is the database's resolution limit, and a name-based workflow has no
+    measured mass for the fuzzy-accept check. Re-reporting those on every run trains the reader
+    to skim the scorecard, which is exactly how a real failure gets missed.
+
+    An acknowledged check is shown as ACK with your reason and stops counting toward the
+    verdict. It is tied to the offenders it was given: if they change, something new is being
+    waved through, so the acknowledgement lapses and the check counts again. A `fail` can never
+    be acknowledged — a hard contract violation is fixed, not accepted.
+    """
+    from . import harness as _harness
+    return _harness.acknowledge_check(workdir, check, why)
 
 
 def harness_audit(workdir: str) -> dict:
@@ -886,6 +921,27 @@ def harness_audit(workdir: str) -> dict:
 
 
 # ----------------------------------------------------------------------- GEM + export
+def _resolve_model(model_path: str | None, s: "Session | None" = None,
+                   label: str | None = None) -> "tuple[str | None, dict | None]":
+    """(path, error). The default model is only a default when the host actually has one."""
+    path = model_path
+    if not path and s is not None and label:
+        path = (s.data.get("models", {}) or {}).get(label)
+    if not path and s is not None and len(s.data.get("models", {}) or {}) == 1:
+        path = next(iter(s.data["models"].values()))     # this run only ever used one model
+    path = path or GEM_MODEL
+    if not path:
+        return None, _err.fail(
+            "invalid_argument",
+            "no genome-scale model to crosswalk against: pass model_path=..., or set "
+            "METABO_IDMAP_GEM. (A model this run already used is remembered per label.)",
+            ["detect_state"])
+    if not Path(path).exists():
+        return None, _err.fail("invalid_argument", f"model file not found: {path}",
+                               ["detect_state"])
+    return str(path), None
+
+
 def _gem_write(e: dict, label: str, model_path: str, mam: list[str], relation: str,
                rationale: str, names: list[str], curated: bool) -> None:
     """Store one model's result on an entry, per model label, and mirror the active view."""
@@ -932,7 +988,9 @@ def gem_crosswalk(workdir: str, feature_ids: list[str] | None = None,
     generic R-group pool species) and gem_cause='id-gap' on a miss.
     """
     s = Session(workdir)
-    path = model_path or GEM_MODEL
+    path, err = _resolve_model(model_path, s, model_label)
+    if err:
+        return err
     label = model_label or _gem.model_label(path)
     s.data.setdefault("models", {})[label] = str(path)
     # endogenous primary mappings + kept exogenous compounds (both may resolve to a species);
@@ -1028,7 +1086,12 @@ def gem_search(query: str | None = None, formula: str | None = None,
     if query is None and e is not None:
         query = _entry_query_name(e)
     if query is None and not (formula or mass or kegg or hmdb or chebi):
-        return {"error": "pass query=, formula=, mass= or an xref (or workdir+feature_id)"}
+        return _err.fail("invalid_argument",
+                         "nothing to search on — pass query=, formula=, mass= or an xref "
+                         "(or workdir+feature_id to use the entry's own name)")
+    model_path, err = _resolve_model(model_path, s)
+    if err:
+        return err
     alts: list[str] = []
     if expand_shorthand and query:
         alts = _short.variants(query)
@@ -1081,29 +1144,39 @@ def gem_assign(workdir: str, feature_id: str, rationale: str,
     s = Session(workdir)
     e = s.get(feature_id)
     if e is None:
-        return {"error": f"unknown feature_id {feature_id}"}
+        return _err.unknown_entry(feature_id)
     if relation not in GEM_RELATIONS:
-        return {"error": f"relation must be one of {sorted(GEM_RELATIONS)}"}
+        return _err.fail("invalid_argument",
+                         f"relation must be one of {sorted(GEM_RELATIONS)}")
     mams = [mam] if isinstance(mam, str) else list(mam or [])
     mams = [m for m in (str(x).strip() for x in mams) if m]
     if relation in GEM_MAPPED_RELATIONS and not mams:
-        return {"error": f"relation '{relation}' needs mam=[...]; use 'model-scope-absent' or "
-                         "'id-gap' to record that no species applies"}
+        return _err.fail("invalid_argument",
+                         f"relation '{relation}' needs mam=[...] — use 'model-scope-absent' "
+                         "or 'id-gap' to record that no species applies",
+                         ["gem_search"])
     if mams and relation not in GEM_MAPPED_RELATIONS:
-        return {"error": f"relation '{relation}' must not carry a mam"}
+        return _err.fail("invalid_argument",
+                         f"relation '{relation}' records that no species applies, so it must "
+                         "not carry a mam")
     if len((rationale or "").strip()) < 8:
-        return {"error": "rationale must state WHY this species (>=8 chars) — it is the "
-                         "provenance for every flux number derived from it"}
+        return _err.fail("invalid_argument",
+                         "rationale must state WHY this species (>=8 chars) — it is the "
+                         "provenance for every flux number derived from it")
 
-    path = model_path or (s.data.get("models", {}) or {}).get(model_label or "") or GEM_MODEL
+    path, err = _resolve_model(model_path, s, model_label)
+    if err:
+        return err
     label = model_label or _gem.model_label(path)
     warnings: list[str] = []
     names, resolved, pooled = [], [], []
     for m in mams:
         det = _gem.species_detail(m, model_path=path)
         if not det.get("found"):
-            return {"error": f"species '{m}' is not in model {label} — run gem_search and use "
-                             "a mam_base it returned (no invented accessions)"}
+            return _err.fail("not_backed",
+                             f"species '{m}' is not in model {label} — use a mam_base "
+                             "gem_search returned (no invented accessions)",
+                             ["gem_search"], model=label)
         resolved.append(det["mam_base"])
         names.append(det.get("gem_name") or "")
         if det.get("pool_species"):
@@ -1249,10 +1322,8 @@ def _ledger_safe(fn):
         try:
             return fn(*args, **kwargs)
         except LedgerConflict as ex:
-            return {"error": str(ex), "error_code": "ledger_conflict", "wrote_nothing": True,
-                    "suggested_next_tools": ["detect_state", fn.__name__],
-                    "note": "another tool call wrote this workdir first; nothing here was "
-                            "saved. Re-read the state and repeat this call."}
+            return _err.fail("ledger_conflict", str(ex), ["detect_state", fn.__name__],
+                             wrote_nothing=True)
     return wrapper
 
 
@@ -1262,6 +1333,5 @@ REGISTRY = [_ledger_safe(fn) for fn in (
     search_synonym, bridge_xref, verify_candidate, mass_match_candidates,
     id_name_check, isomer_guard, collision_check, acknowledge_flag,
     screen_exogenous, record_decision, backfill_hmdb, gem_crosswalk, gem_search, gem_assign,
-    mapping_provenance, annotate_source, plot_coverage, export_code,
-    export_report_ppt, coverage_summary, finalize_run, harness_audit,
+    coverage_summary, finalize_run, acknowledge_check, harness_audit,
 )]

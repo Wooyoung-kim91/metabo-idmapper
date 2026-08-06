@@ -16,15 +16,22 @@ refuses any accepted ID that no tool produced.
 |---|---|
 | normalize names; exact DB match; PubChem/KEGG/ChEBI search; BridgeDb xref; molmass formula/mass verify; m/z→mass windows; **ID→own-DB-record back-check**; **isomer/class token comparison**; **shared-ID detection**; GEM xref crosswalk + **model name/formula/mass search**; coverage | is a fuzzy/typo/synonym candidate correct? abbreviation expansion? endogenous vs **xenobiotic**? which isomer, when the names disagree? is a class-level ID acceptable here? is a model species the compound, a class proxy, a surrogate, or genuinely absent? confidence tier; final inclusion |
 
-## Tools (27)
+## Tools (23)
 
 `midmap_guidance` · `detect_state` · `ingest_names` · `exact_match` · `structure_lookup` ·
 `search_synonym` · `bridge_xref` · `verify_candidate` · `mass_match_candidates` ·
 **`id_name_check`** · **`isomer_guard`** · **`collision_check`** · **`acknowledge_flag`** ·
 `screen_exogenous` · `record_decision` · `backfill_hmdb` · `gem_crosswalk` ·
 **`gem_search`** · **`gem_assign`** ·
-`mapping_provenance` · `annotate_source` · `plot_coverage` · `export_code` ·
-`export_report_ppt` · `coverage_summary` · **`finalize_run`** · `harness_audit`
+`coverage_summary` · **`finalize_run`** · **`acknowledge_check`** · `harness_audit`
+
+The five one-shot emitters (figures, provenance tables, reproduction code, annotated source,
+slide deck) are steps of `finalize_run(what=[...])` rather than five separate names: the tool
+list is a budget the reasoning layer pays attention out of, and they were only ever called at
+the end. Every tool failure returns `{error, error_code, means, suggested_next_tools}` —
+`invalid_state` / `unknown_entry` / `invalid_argument` / `not_backed` / `engine_failed` /
+`ledger_conflict` / `export_failed` — so a dead R engine is never mistaken for "this compound
+has no ID".
 
 Call `midmap_guidance` first for the canonical workflow, confidence tiers (M1–U), and gotchas.
 

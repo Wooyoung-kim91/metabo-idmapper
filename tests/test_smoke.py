@@ -165,7 +165,9 @@ def test_finalize_run_orders_stage7_and_coverage_stays_pure():
         # finalize_run is where the stage-7 ORDER lives
         out = tools.finalize_run(d)
         assert out["steps_failed"] == []
+        # annotated_source drops out silently: this run ingested a name list, not a file
         assert out["steps_run"] == ["coverage", "figures", "provenance", "code"]
+        assert tools.finalize_run(d, what=["nope"])["error_code"] == "invalid_argument"
         for rel in ("figures/db_matching_upset.png", "figures/db_matching_improvement.png",
                     "enriched_xref.tsv", "gem_curation.tsv", "code/reproduce_mapping.py"):
             assert os.path.exists(os.path.join(d, rel)), rel
@@ -175,11 +177,14 @@ def test_server_registers_all_tools():
     mcp = build_server()
     names = {t.name for t in mcp._tool_manager.list_tools()}
     assert {"midmap_guidance", "ingest_names", "record_decision", "screen_exogenous",
-            "backfill_hmdb", "plot_coverage", "mapping_provenance", "gem_crosswalk",
-            "export_code", "annotate_source", "export_report_ppt", "coverage_summary",
+            "backfill_hmdb", "gem_crosswalk", "coverage_summary", "finalize_run",
             "harness_audit", "id_name_check", "isomer_guard", "collision_check",
-            "gem_search", "gem_assign", "acknowledge_flag", "finalize_run"} <= names
-    assert len(names) == 27
+            "gem_search", "gem_assign", "acknowledge_flag", "acknowledge_check"} <= names
+    # the five one-shot emitters are reachable through finalize_run(what=[...]) instead of
+    # costing five names in the registry
+    assert not ({"plot_coverage", "mapping_provenance", "export_code", "annotate_source",
+                 "export_report_ppt"} & names)
+    assert len(names) == 23
 
 
 def test_harness_audit_scorecard():
@@ -593,6 +598,102 @@ def test_flags_are_derived_and_acknowledgeable():
         assert st["flags"]["self_resolved"]["class_level_id"] == 1
 
 
+def test_errors_carry_a_code_the_reasoning_layer_can_act_on():
+    """A failure is a return value here, so it has to say WHICH kind of failure it is:
+    a missing prerequisite, a bad argument and a refusal need different responses."""
+    from metabo_idmapper.errors import CODES
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Taurine"])
+        unknown = tools.record_decision(d, "M9999", rationale="x")
+        assert unknown["error_code"] == "unknown_entry"
+        assert "detect_state" in unknown["suggested_next_tools"]
+        # anti-fabrication is a refusal, not a bad argument
+        fake = tools.record_decision(d, "M0000", rationale="guessing",
+                                     accepted={"kegg": "C00245"})
+        assert fake["error_code"] == "not_backed"
+        assert "search_synonym" in fake["suggested_next_tools"]
+        bad = tools.record_decision(d, "M0000", rationale="x", final_class="nonsense")
+        assert bad["error_code"] == "invalid_argument"
+        assert tools.gem_assign(d, "M0000", relation="not-a-relation",
+                                rationale="x" * 20)["error_code"] == "invalid_argument"
+        assert tools.ingest_names(d)["error_code"] == "invalid_argument"
+        for out in (unknown, fake, bad):
+            assert out["error_code"] in CODES and out["means"] == CODES[out["error_code"]]
+
+
+def test_harness_warn_can_be_acknowledged_and_the_ack_lapses():
+    """Re-reporting a warning that was reviewed and accepted teaches the reader to skim the
+    scorecard — which is how a real failure gets missed. But an ack covers the situation it
+    was given, so a NEW offender must re-open the check."""
+    from metabo_idmapper import harness
+    from metabo_idmapper.state import Session
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Azetidine-1-carboxylic acid"])
+        s = Session(d)
+        s.entries["M0000"]["candidates"].append({"source": "kegg-search", "kegg": "C08267"})
+        s.save()
+        tools.record_decision(d, "M0000", rationale="verified locant", confidence="M2",
+                              accepted={"kegg": "C08267"})
+        by = {c["check"]: c for c in harness.audit(d)["checks"]}
+        assert by["isomer_locant_safety"]["level"] == "warn"
+
+        assert tools.acknowledge_check(d, "isomer_locant_safety", "ok")["error_code"] \
+            == "invalid_argument"                                  # a reason is required
+        assert tools.acknowledge_check(d, "nope", "x" * 20)["error_code"] == "invalid_argument"
+        ok = tools.acknowledge_check(d, "isomer_locant_safety",
+                                     "locant confirmed against the KEGG record; the 2-isomer "
+                                     "is the one reported")
+        assert ok["acknowledged"]["fingerprint"]
+        rep = harness.audit(d)
+        row = {c["check"]: c for c in rep["checks"]}["isomer_locant_safety"]
+        assert row["effective_level"] == "pass" and row["acknowledged"]["why"]
+        assert rep["verdict"] != "warn" or all(
+            c.get("effective_level", c["level"]) != "warn" for c in rep["checks"]
+            if c["check"] == "isomer_locant_safety")
+        assert rep["scorecard"][5].startswith("ACK") or any(
+            line.startswith("ACK") for line in rep["scorecard"])
+
+        # a second locant-sensitive entry is a NEW situation: the ack no longer covers it
+        tools.ingest_names(d, names=["Azetidine-2-carboxylic acid"])
+        s = Session(d)
+        s.entries["M0001"]["candidates"].append({"source": "kegg-search", "kegg": "C08267"})
+        s.save()
+        tools.record_decision(d, "M0001", rationale="verified locant", confidence="M2",
+                              accepted={"kegg": "C08267"})
+        row = {c["check"]: c for c in harness.audit(d)["checks"]}["isomer_locant_safety"]
+        assert "acknowledged" not in row and row["stale_acknowledgement"]
+        assert "no longer applies" in row["summary"]
+
+    # a FAIL can never be acknowledged
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["MysteryDietCompound"])
+        s = Session(d)
+        s.entries["M0000"]["final_class"] = "exogenous"
+        s.entries["M0000"]["confidence"] = "M4"
+        s.save()
+        out = tools.acknowledge_check(d, "origin_coherence", "we are fine with this, honestly")
+        assert out["error_code"] == "invalid_argument" and "FAIL" in out["error"]
+
+
+def test_missing_model_asset_is_an_argument_error_not_a_crash():
+    """A path baked into the package must not travel to another host as a valid-looking
+    string that resolves to nothing deep inside COBRApy."""
+    from metabo_idmapper import tools as T
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Taurine"])
+        orig = T.GEM_MODEL
+        T.GEM_MODEL = None
+        try:
+            out = tools.gem_crosswalk(d)
+            assert out["error_code"] == "invalid_argument"
+            assert "METABO_IDMAP_GEM" in out["error"]
+            assert tools.gem_search(query="taurine")["error_code"] == "invalid_argument"
+        finally:
+            T.GEM_MODEL = orig
+        assert tools.gem_crosswalk(d, model_path="/no/such/model.xml")["error_code"] \
+            == "invalid_argument"
+
+
 def test_raw_engine_is_the_single_source_for_reproduction_code():
     """The reproduction artifacts must COPY the engine, not restate it.
 
@@ -622,7 +723,7 @@ def test_raw_engine_is_the_single_source_for_reproduction_code():
 
     with tempfile.TemporaryDirectory() as d:
         tools.ingest_names(d, names=["Taurine"])
-        out = tools.export_code(d)
+        out = tools.finalize_run(d, what=['code'])['code']
         engine_src = pathlib_Path(raw_engine.__file__).read_text()
         # the script inlines that exact source; the notebook ships it as a sidecar
         assert engine_src in pathlib_Path(out["script"]).read_text()
@@ -645,7 +746,7 @@ def test_export_code_is_raw_api_and_compiles():
         s.entries["M0000"]["candidates"].append({"source": "metaboanalyst", "kegg": "C00245"})
         s.save()
         tools.record_decision(d, "M0000", rationale="t", accepted={"kegg": "C00245"})
-        out = tools.export_code(d)
+        out = tools.finalize_run(d, what=["code"])["code"]
         script = out["script"]
         src = open(script).read()
         py_compile.compile(script, doraise=True)          # valid Python
