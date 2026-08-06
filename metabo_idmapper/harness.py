@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import collide as _collide
+from . import flags as _flags
 from .engine import lexicon as _lex
 from .state import (CLASS_FOR_ORIGIN, EXCLUDED_CLASSES, PRIMARY_CLASSES,
                     VALID_ORIGINS, Session)
@@ -51,8 +52,11 @@ def _accept_decisions(e: dict) -> list[dict]:
     return [d for d in e.get("decisions", []) if d.get("action") in ("accept", "auto_accept")]
 
 
-def _flags(e: dict) -> list[str]:
-    return e.get("_flags", []) or []
+def _flagged(s: Session, name: str) -> list[str]:
+    """Entries whose `name` flag is still OPEN — derived from the current ledger (flags.py),
+    so an entry whose problem was fixed is already absent and an acknowledged one is reported
+    as acknowledged rather than silently dropped. The audit reads state, not history."""
+    return _flags.entries_with(s, name)
 
 
 # --------------------------------------------------------------------------- checks
@@ -191,16 +195,9 @@ def _check_origin_coherence(s: Session) -> tuple[str, str, list]:
 
 def _check_flagged_auto_accepts_reviewed(s: Session) -> tuple[str, str, list]:
     """Contract (driver+reviewer): exact_match 'auto_accept_review' flags (messy/trade-name
-    M1 auto-accepts) are SUSPECT — route to the reviewer and re-verify. Treat an entry that
-    still has only its single auto_accept decision as unreviewed."""
-    off = []
-    for fid, e in s.entries.items():
-        if "auto_accept_review" not in _flags(e):
-            continue
-        decs = _accept_decisions(e)
-        only_auto = decs and all(d.get("action") == "auto_accept" for d in decs) and len(decs) == 1
-        if only_auto:
-            off.append(fid)
+    M1 auto-accepts) are SUSPECT — route to the reviewer and re-verify. The flag closes itself
+    once a deliberate accept/exclude decision replaces the automatic one."""
+    off = _flagged(s, "auto_accept_review")
     return ("warn" if off else "pass",
             f"{len(off)} messy/trade-name M1 auto-accept(s) never re-verified after flagging" if off
             else "flagged auto-accepts were reviewed/re-decided", off)
@@ -209,12 +206,7 @@ def _check_flagged_auto_accepts_reviewed(s: Session) -> tuple[str, str, list]:
 def _check_id_gap_generic_kegg(s: Session) -> tuple[str, str, list]:
     """Contract (driver): id_gap_try_generic_kegg = a KEGG that failed GEM crosswalk; search a
     generic KEGG and re-crosswalk. Flag entries still carrying a KEGG with no GEM MAM."""
-    # An entry the driver has since RESOLVED — mapped by another route, or deliberately
-    # recorded as model-scope-absent — is no longer an open id-gap, whatever the flag says.
-    off = [fid for fid, e in s.entries.items()
-           if "id_gap_try_generic_kegg" in _flags(e)
-           and (e.get("accepted") or {}).get("kegg") and not e.get("gem_mam")
-           and e.get("gem_relation") in (None, "id-gap")]
+    off = _flagged(s, "id_gap_try_generic_kegg")
     return ("warn" if off else "pass",
             f"{len(off)} anomer/stereo KEGG still failing GEM crosswalk — try a generic KEGG" if off
             else "no unresolved id-gap-with-KEGG entries", off)
@@ -245,22 +237,11 @@ def _check_id_backcheck(s: Session) -> tuple[str, str, list]:
 def _check_id_name_conflicts(s: Session) -> tuple[str, str, list]:
     """Contract: `id_name_check` / `exact_match` mark an id whose own DB name disagrees with the
     entry name (`id_name_conflict`, `isomer_token_conflict`). Such an id is the WRONG compound
-    or isomer; keeping it accepted is a hard violation. Cleared by re-deciding the entry after
-    the flag was raised."""
-    off = []
-    for fid, e in s.entries.items():
-        accepted = e.get("accepted") or {}
-        decs = e.get("decisions", [])
-        # a back-checked id that came back 'conflict' and is STILL accepted
-        for d in decs:
-            if d.get("action") == "backcheck" and d.get("verdict") == "conflict":
-                db, idv = d.get("db"), str(d.get("id"))
-                if str(accepted.get(db) or "") == idv:
-                    off.append(f"{fid}:{db}={idv}-still-accepted")
-        # an auto-accept whose DB Match name disagreed and was never re-decided since
-        if "isomer_token_conflict" in _flags(e) and not any(
-                d.get("action") in ("accept", "exclude") for d in decs):
-            off.append(f"{fid}:auto-accepted-isomer-mismatch-not-re-decided")
+    or isomer; keeping it accepted is a hard violation. The flags close themselves once the
+    contradicting id is no longer accepted (or the entry is re-decided)."""
+    off = [f"{fid}:id-resolves-to-another-compound" for fid in _flagged(s, "id_name_conflict")]
+    off += [f"{fid}:auto-accepted-isomer-mismatch-not-re-decided"
+            for fid in _flagged(s, "isomer_token_conflict")]
     return ("fail" if off else "pass",
             f"{len(off)} entr(y/ies) whose id contradicts its name on a discriminant axis and "
             f"was never re-decided" if off
@@ -355,8 +336,7 @@ def _check_hmdb_backfill_conflicts(s: Session) -> tuple[str, str, list]:
     """Contract (backfill_hmdb): a bridged HMDB that is already accepted for another compound
     is skipped, not shared. The skip is recorded as `hmdb_backfill_conflict` and the entry then
     needs its own species-specific accession (or none) — it should not be left unexamined."""
-    off = [fid for fid, e in s.entries.items() if "hmdb_backfill_conflict" in _flags(e)
-           and not (e.get("accepted") or {}).get("hmdb")]
+    off = _flagged(s, "hmdb_backfill_conflict")
     return ("warn" if off else "pass",
             f"{len(off)} entr(y/ies) left without HMDB because the only bridged accession "
             f"belongs to another compound — find the species-specific one" if off
@@ -439,13 +419,16 @@ def audit(workdir: str) -> dict[str, Any]:
         checks.append({"check": fn.__name__.removeprefix("_check_"), "level": level,
                        "summary": summary, "offenders": offenders[:_CAP]})
 
+    flag_state = _flags.summary(s)
     verdict = max(checks, key=lambda c: _LEVELS[c["level"]])["level"]
     scorecard = [f"{c['level'].upper():5} {c['check']} — {c['summary']}" for c in checks]
     return {
         "workdir": str(s.workdir), "n_entries": n,
-        "verdict": verdict, "score": score,
+        "verdict": verdict, "score": score, "flags": flag_state,
         "checks": checks, "scorecard": scorecard,
-        "note": "read-only governance audit; no ledger state was changed. verdict = worst "
+        "note": "flags.acknowledged are flags a human/driver deliberately accepted, with the "
+                "reason on the record — they are reported, not hidden. read-only governance "
+                "audit; no ledger state was changed. verdict = worst "
                 "check level. fail = a hard contract violation (fix before finalizing); "
                 "warn = review-and-confirm; pass = invariant honored.",
     }

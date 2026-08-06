@@ -8,9 +8,11 @@ sets an entry's final_class/confidence — and it refuses IDs no other tool prod
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from . import collide as _collide
+from . import flags as _flags
 from . import guidance as _guidance
 from .config import BRIDGE_DB, GEM_MODEL
 from .engine import chebi as _chebi
@@ -24,8 +26,8 @@ from .engine import structure as _struct
 from .engine import verify as _verify
 from .engine.rcall import run_r
 from .state import (ALL_CLASSES, CLASS_FOR_ORIGIN, EXCLUDED_CLASSES, GEM_MAPPED_RELATIONS,
-                    GEM_RELATIONS, ID_KEYS, LEGACY_CLASSES, PRIMARY_CLASSES, VALID_ORIGINS,
-                    Entry, Session)
+                    GEM_RELATIONS, LEGACY_CLASSES, PRIMARY_CLASSES, VALID_ORIGINS,
+                    Entry, LedgerConflict, Session)
 
 # BridgeDb system names for the ids we handle.
 _SRC = {"kegg": "KEGG Compound", "hmdb": "HMDB", "chebi": "ChEBI",
@@ -39,7 +41,9 @@ def midmap_guidance() -> dict:
 
 
 def detect_state(workdir: str) -> dict:
-    """Report what is mapped vs pending and suggest the next tool(s)."""
+    """Report what is mapped vs pending, which review flags are still OPEN, and the next
+    tool(s). Open flags are derived from the current ledger state, not from a stale list: a
+    flag whose underlying problem was fixed stops being reported by itself. Read-only."""
     s = Session(workdir)
     counts = s.class_counts()
     n = len(s.entries)
@@ -54,10 +58,10 @@ def detect_state(workdir: str) -> dict:
     else:
         nxt = ["id_name_check", "collision_check", "gem_crosswalk", "gem_search",
                "gem_assign", "coverage_summary"]
-    # entry-level flags the driver must clear before finalizing
+    # entry-level flags still OPEN (predicate-derived; acknowledged ones are listed apart)
     open_flags: dict[str, list[str]] = {}
     for fid, e in s.entries.items():
-        for f in e.get("_flags", []) or []:
+        for f in _flags.open_flags(e, s):
             open_flags.setdefault(f, []).append(fid)
     unchecked = [fid for fid, e in s.entries.items()
                  if (e.get("accepted") or {}).get("kegg")
@@ -65,18 +69,25 @@ def detect_state(workdir: str) -> dict:
     gem_open = [fid for fid, e in s.entries.items()
                 if e.get("final_class") in (PRIMARY_CLASSES | {"exogenous"})
                 and (e.get("gem_relation") in (None, "id-gap"))]
-    return {"workdir": str(s.workdir), "n_entries": n, "counts": counts,
-            "pending": len(pend), "pending_sample": pend[:15],
-            "flags": {k: len(v) for k, v in sorted(open_flags.items())},
-            "flagged_sample": {k: v[:8] for k, v in sorted(open_flags.items())},
-            "kegg_not_backchecked": len(unchecked),
-            "gem_unresolved": len(gem_open), "gem_unresolved_sample": gem_open[:10],
-            "suggested_next_tools": nxt,
-            "note": "flags are open review items (id_name_conflict / shared_id_collision / "
-                    "isomer_token_conflict / class_level_id / hmdb_backfill_conflict / "
-                    "auto_accept_review / id_gap_try_generic_kegg) — resolve each before "
-                    "finalizing. gem_unresolved entries still need gem_search + gem_assign "
-                    "(including an explicit 'model-scope-absent' where that is the answer)."}
+    out = {"workdir": str(s.workdir), "n_entries": n, "counts": counts,
+           "schema_version": s.data.get("schema_version"),
+           "pending": len(pend), "pending_sample": pend[:15],
+           "flags": _flags.summary(s),
+           "flagged_sample": {k: v[:8] for k, v in sorted(open_flags.items())},
+           "kegg_not_backchecked": len(unchecked),
+           "gem_unresolved": len(gem_open), "gem_unresolved_sample": gem_open[:10],
+           "suggested_next_tools": nxt,
+           "note": "flags.open = still true right now (each carries what resolves it in "
+                   "flags.definitions); flags.self_resolved = raised earlier, no longer the "
+                   "case; flags.acknowledged = deliberately accepted with a recorded reason "
+                   "(acknowledge_flag). Resolve or acknowledge every 'action' flag before "
+                   "finalizing. gem_unresolved entries still need gem_search + gem_assign "
+                   "(including an explicit 'model-scope-absent' where that is the answer)."}
+    if s.migrations:
+        out["ledger_migrated"] = s.migrations
+        out["note"] += (" This ledger was written by an older schema and was migrated on "
+                        "load; the change is applied to the file by the next write.")
+    return out
 
 
 def ingest_names(workdir: str, names: list[str] | None = None,
@@ -111,7 +122,8 @@ def ingest_names(workdir: str, names: list[str] | None = None,
             xeno.append({"feature_id": fid, "name": raw, "tags": tags})
         s.upsert(e)
         if tags:
-            s.entries[fid].setdefault("_flags", []).append("possible_xenobiotic")
+            _flags.raise_flag(s.entries[fid], "possible_xenobiotic",
+                              f"name matches non-biological class {tags}", "ingest_names")
         if norm["flags"]:
             flagged.append({"feature_id": fid, "name": raw,
                             "parenthetical": norm["parenthetical"],
@@ -188,14 +200,18 @@ def exact_match(workdir: str, feature_ids: list[str] | None = None,
                             "hmdb": cand.get("hmdb")})
                         flag = ("isomer_token_conflict" if rep["verdict"] == "conflict"
                                 else "class_level_id")
-                        if flag not in e.setdefault("_flags", []):
-                            e["_flags"].append(flag)
+                        _flags.raise_flag(
+                            e, flag,
+                            f"auto-accepted as '{row.get('match')}' — {rep['verdict']} on "
+                            f"{[c['axis'] for c in rep['conflicts']] or 'resolution'}",
+                            "exact_match")
                     if risky:
                         flagged.append({"feature_id": fid, "name": e["original_name"],
                                         "matched_as": row.get("match"),
                                         "kegg": cand.get("kegg"), "hmdb": cand.get("hmdb")})
-                        if "auto_accept_review" not in e.setdefault("_flags", []):
-                            e["_flags"].append("auto_accept_review")
+                        _flags.raise_flag(e, "auto_accept_review",
+                                          f"M1 auto-accept of an ambiguous name as "
+                                          f"'{row.get('match')}'", "exact_match")
     s.save()
     return {"queried": len(q_by_name), "matched": matched,
             "auto_accepted_M1": accepted, "flagged_auto_accepts": flagged,
@@ -496,13 +512,15 @@ def id_name_check(workdir: str | None = None, feature_ids: list[str] | None = No
                            db=db, id=val, db_names=rec.get("names", [])[:6],
                            verdict=rep["verdict"], conflicts=rep.get("conflicts", []),
                            db_formula=rec.get("formula"))
-            flags = e.setdefault("_flags", [])
             if rep["verdict"] == "conflict":
                 conflicts.append(row)
-                if "id_name_conflict" not in flags:
-                    flags.append("id_name_conflict")
-            elif rep["verdict"] == "class-level" and "class_level_id" not in flags:
-                flags.append("class_level_id")
+                _flags.raise_flag(e, "id_name_conflict",
+                                  f"{db}:{val} resolves to {rec.get('names', [''])[:2]}",
+                                  "id_name_check")
+            elif rep["verdict"] == "class-level":
+                _flags.raise_flag(e, "class_level_id",
+                                  f"{db}:{val} is the class entry "
+                                  f"'{rep.get('matched_name')}'", "id_name_check")
     s.save()
     return {"checked": len(rows), "n_conflicts": len(conflicts), "conflicts": conflicts,
             "results": rows, "fetch_errors": fetch_errors,
@@ -566,10 +584,12 @@ def collision_check(workdir: str, model_label: str | None = None) -> dict:
     gem_hits, proxy_hits = [], []
     id_hits = _collide.scan(s.entries, s.accepted_index())
     for row in id_hits:
+        if row["severity"] != "collision":
+            continue
         for f in row["feature_ids"]:
-            flags = s.entries[f].setdefault("_flags", [])
-            if row["severity"] == "collision" and "shared_id_collision" not in flags:
-                flags.append("shared_id_collision")
+            _flags.raise_flag(s.entries[f], "shared_id_collision",
+                              f"{row['db']}:{row['id']} also accepted for "
+                              f"{[x for x in row['feature_ids'] if x != f]}", "collision_check")
     label = model_label
     for mam, fids in sorted(s.gem_index(label).items()):
         if len(fids) < 2:
@@ -822,6 +842,32 @@ def screen_exogenous(workdir: str) -> dict:
                     "and record them as final_class='exogenous' with origin diet/drug/microbial/plant."}
 
 
+def acknowledge_flag(workdir: str, feature_id: str, flag: str, why: str) -> dict:
+    """Deliberately accept a review flag that cannot be 'fixed', with a recorded reason.
+
+    Most flags close by themselves once the underlying problem is gone — they are derived from
+    the ledger, not stored as stale strings. Some cannot: three lyso-PC species sharing KEGG
+    C04230 is the DB's resolution limit, not an error to repair. Acknowledging says so ON THE
+    RECORD, and the flag is then reported as acknowledged (with this reason) rather than
+    silently disappearing. Use it only after the flag is understood; `why` must say what makes
+    the flagged state acceptable and how it is handled downstream.
+    """
+    s = Session(workdir)
+    e = s.get(feature_id)
+    if e is None:
+        return {"error": f"unknown feature_id {feature_id}"}
+    res = _flags.acknowledge(e, flag, why)
+    if "error" in res:
+        raised = sorted((e.get("flags") or {}))
+        return {**res, "flags_on_this_entry": raised,
+                "open_now": _flags.open_flags(e, s)}
+    s.add_decision(feature_id, "acknowledge_flag", why, flag=flag)
+    s.save()
+    return {"feature_id": feature_id, **res, "open_now": _flags.open_flags(e, s),
+            "note": "reported as an acknowledged flag in detect_state and harness_audit — it "
+                    "is a decision on the record, not a suppression."}
+
+
 def harness_audit(workdir: str) -> dict:
     """GOVERNANCE / process-completeness auditor (read-only, no identity judgement): reads the
     session ledger + workdir artifacts and checks that the reasoning layer actually HONORED
@@ -927,8 +973,9 @@ def gem_crosswalk(workdir: str, feature_ids: list[str] | None = None,
             if acc.get("kegg"):
                 id_gap_with_kegg.append({"feature_id": fid, "name": e["original_name"],
                                          "kegg": acc["kegg"]})
-                if "id_gap_try_generic_kegg" not in e.setdefault("_flags", []):
-                    e["_flags"].append("id_gap_try_generic_kegg")
+                _flags.raise_flag(e, "id_gap_try_generic_kegg",
+                                  f"kegg {acc['kegg']} has no xref in model {label}",
+                                  "gem_crosswalk")
             if suggest_by_name:
                 hits = _gem_name_suggest(e, path, max_suggestions)
                 e["gem_candidates"] = hits
@@ -1136,8 +1183,8 @@ def backfill_hmdb(workdir: str, db: str | None = None) -> dict:
         for src, idv in seen_src.items():
             queries.append({"feature_id": fid, "id": idv, "source": src, "targets": ["hmdb"]})
     if queries:
-        bridge_xref(workdir, queries, db=db)  # attaches padded HMDB candidates
-    s = Session(workdir)
+        bridge_xref(workdir, queries, db=db)  # attaches padded HMDB candidates (own session)
+        s = Session(workdir)                  # reload ONCE, after that external write
     # HMDB accessions already accepted by ANOTHER entry. Bridging is per-entry and blind to
     # this: in a verified run it re-created the Lc3Cer/nLc4Cer shared-accession collision that
     # had just been hand-corrected. Never hand one accession to a second compound here.
@@ -1156,9 +1203,8 @@ def backfill_hmdb(workdir: str, db: str | None = None) -> dict:
                 "other_name": s.entries[other]["original_name"],
                 "isomer_verdict": _isomer.compare(e["original_name"],
                                                   s.entries[other]["original_name"])["verdict"]})
-            if "hmdb_backfill_conflict" not in e.setdefault("_flags", []):
-                e["_flags"].append("hmdb_backfill_conflict")
-            s.save()
+            _flags.raise_flag(e, "hmdb_backfill_conflict",
+                              f"{hmdbs[0]} is already accepted for {other}", "backfill_hmdb")
             continue
         hmdbs = free
         if not hmdbs:
@@ -1167,15 +1213,21 @@ def backfill_hmdb(workdir: str, db: str | None = None) -> dict:
         # preserve class + origin: an exogenous compound stays exogenous when it gains HMDB;
         # only a structure-only entry is allowed to be promoted (final_class=None → derive).
         keep_fc = e.get("final_class") if e.get("final_class") == "exogenous" else None
-        record_decision(workdir, fid, rationale="HMDB backfill (BridgeDb)",
-                        accepted=acc, final_class=keep_fc, origin=e.get("origin"),
-                        confidence=e.get("confidence") or "M2")
+        # commit IN THIS session rather than re-entering record_decision: that re-read and
+        # re-wrote the whole ledger once per entry, and now would race its own writes.
+        try:
+            _commit(s, fid, acc, e.get("confidence") or "M2", "HMDB backfill (BridgeDb)",
+                    keep_fc, origin=e.get("origin"))
+        except ValueError as ex:
+            skipped_conflicts.append({"feature_id": fid, "name": e["original_name"],
+                                      "hmdb": hmdbs[0], "reason": str(ex)})
+            continue
         gained.append({"feature_id": fid, "name": e["original_name"], "hmdb": hmdbs[0]})
         taken[str(hmdbs[0])] = fid
-        s = Session(workdir)
+    s.save()
     return {"targets_missing_hmdb": len(targets), "hmdb_gained": len(gained),
             "gained": gained[:40], "skipped_conflicts": skipped_conflicts,
-            "counts": Session(workdir).class_counts(),
+            "counts": s.class_counts(),
             "note": "run before coverage_summary to normalize HMDB coverage; structure-only "
                     "with no id-bridgeable HMDB remain (need name→HMDB, a separate step). "
                     "skipped_conflicts = the only HMDB the bridge offered is already accepted "
@@ -1492,7 +1544,7 @@ def coverage_summary(workdir: str, export: bool = True, figures: bool = True) ->
                             acc.get("pubchem", ""), acc.get("inchikey", ""),
                             e.get("gem_model") or "",
                             ";".join(e.get("gem_mam", [])), e.get("gem_relation") or "",
-                            e.get("gem_cause") or "", ";".join(e.get("_flags", []) or []),
+                            e.get("gem_cause") or "", ";".join(_flags.open_flags(e, s)),
                             len(e.get("candidates", [])), len(e.get("decisions", []))])
         cov = s.workdir / "coverage_summary.tsv"
         with open(cov, "w", newline="") as f:
@@ -1524,12 +1576,31 @@ def coverage_summary(workdir: str, export: bool = True, figures: bool = True) ->
     return summary
 
 
+def _ledger_safe(fn):
+    """Turn a lost-update refusal into a structured result instead of an MCP exception.
+
+    `Session.save()` refuses to overwrite a ledger that changed since it was read (two tool
+    calls interleaving on one workdir). The caller needs to know that nothing was written and
+    that the fix is to re-run the operation — not a stack trace.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except LedgerConflict as ex:
+            return {"error": str(ex), "error_code": "ledger_conflict", "wrote_nothing": True,
+                    "suggested_next_tools": ["detect_state", fn.__name__],
+                    "note": "another tool call wrote this workdir first; nothing here was "
+                            "saved. Re-read the state and repeat this call."}
+    return wrapper
+
+
 # registry consumed by mcp_server
-REGISTRY = [
+REGISTRY = [_ledger_safe(fn) for fn in (
     midmap_guidance, detect_state, ingest_names, exact_match, structure_lookup,
     search_synonym, bridge_xref, verify_candidate, mass_match_candidates,
-    id_name_check, isomer_guard, collision_check,
+    id_name_check, isomer_guard, collision_check, acknowledge_flag,
     screen_exogenous, record_decision, backfill_hmdb, gem_crosswalk, gem_search, gem_assign,
     mapping_provenance, annotate_source, plot_coverage, export_code,
     export_report_ppt, coverage_summary, harness_audit,
-]
+)]

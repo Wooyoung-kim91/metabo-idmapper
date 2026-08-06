@@ -17,6 +17,12 @@ tool did not return — `record_decision` refuses it.
 1. Call `midmap_guidance` once (workflow, confidence tiers M1–U, final_class vocab, gotchas).
 2. `detect_state` on the workdir; follow `suggested_next_tools`. One tool at a time; inspect
    each summary before the next. Before a non-trivial choice: candidates → pick → one-line why.
+   `detect_state.flags.open` is your work list: each open flag carries what resolves it. Fixing
+   the underlying problem closes it automatically — there is nothing to clear. If a flag is
+   real but unfixable (KEGG only has a class-level entry), `acknowledge_flag` with a reason;
+   that is a recorded decision, and the run should end with no open `action` flag.
+   One writing tool at a time per workdir: a call that finds the ledger changed underneath it
+   returns `error_code: "ledger_conflict"`, writes nothing, and must be repeated.
 
 ## Stage placement (judgment concentrates in stage 3 and stage 5)
 
@@ -191,7 +197,9 @@ IDs, final_class, confidence, origin, and any verify_candidate formula/mass resu
   incoherent (e.g. origin='drug' but final_class='xenobiotic-excluded').
 
 ## Prioritize the tool-provided flags
-The engine marks risky entries for you — check these FIRST (`detect_state` lists open flags):
+The engine marks risky entries for you — check these FIRST. `detect_state.flags` splits them
+into `open` (still true), `self_resolved` (already fixed) and `acknowledged` (accepted with a
+recorded reason), so only the open ones are work:
 - `auto_accept_review`: a messy/trade-name/ambiguous-token M1 auto-accept. Verify the DB match
   is the intended compound.
 - `id_name_conflict` / `isomer_token_conflict`: the id's own DB name disagrees with the entry

@@ -38,6 +38,22 @@ before finalizing, invoke `review_mappings` for independent adversarial verifica
 - One judgement at a time; record it with `record_decision` so the ledger stays the
   authoritative provenance trail.
 
+## Ledger + review flags (how state behaves)
+- One ledger per workdir, and each tool call REPLACES it. A call that finds the file changed
+  underneath it returns `error_code: "ledger_conflict"` and writes NOTHING — re-read the state
+  and repeat that call. Do not run two writing tools on one workdir at the same time.
+- The ledger carries a `schema_version`. An older ledger is migrated when it is loaded (the
+  change lands in the file on the next write) and the migration is reported by `detect_state`,
+  including model accessions repaired from an older base-id bug — re-run `gem_crosswalk` to
+  confirm those against the model.
+- Review flags are DERIVED, not stored as stale strings: `detect_state.flags.open` lists the
+  ones whose condition is true RIGHT NOW, each with what resolves it. Fix the underlying
+  problem and the flag disappears by itself; nothing needs clearing. `self_resolved` shows the
+  ones that already closed. When a flag is real but cannot be fixed (KEGG only has a
+  class-level entry for three lyso-PC species), `acknowledge_flag` records WHY it is
+  acceptable, and it is then reported as acknowledged — never silently dropped.
+- Finish a run with no open `action` flag: every one is either resolved or acknowledged.
+
 ## Stages (run only what the request needs; `detect_state` tells you what is pending)
 1. ingest_names   — load + normalize raw names into the session ledger. Flags
                     parenthetical abbreviations (e.g. "TMAO(trimethylamine N-oxide)")

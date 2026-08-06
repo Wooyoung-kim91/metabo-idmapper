@@ -39,7 +39,7 @@ def _class_level_evidence(entry: dict, db: str, val: str) -> str | None:
         if str(c.get(db) or "") == str(val) and c.get("note"):
             if _isomer.features(c["note"])["resolution"] == "class":
                 return f"candidate name '{c['note']}' is a class-level entry"
-    if "class_level_id" in (entry.get("_flags") or []):
+    if "class_level_id" in (entry.get("flags") or {}):
         return "entry flagged class_level_id"
     return None
 

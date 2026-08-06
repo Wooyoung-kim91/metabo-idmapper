@@ -3,6 +3,7 @@ core, the session ledger, the anti-fabrication guard, and MCP server constructio
 
 import json
 import tempfile
+from pathlib import Path as pathlib_Path
 
 from metabo_idmapper import tools
 from metabo_idmapper.engine import normalize, verify
@@ -170,8 +171,8 @@ def test_server_registers_all_tools():
             "backfill_hmdb", "plot_coverage", "mapping_provenance", "gem_crosswalk",
             "export_code", "annotate_source", "export_report_ppt", "coverage_summary",
             "harness_audit", "id_name_check", "isomer_guard", "collision_check",
-            "gem_search", "gem_assign"} <= names
-    assert len(names) == 25
+            "gem_search", "gem_assign", "acknowledge_flag"} <= names
+    assert len(names) == 26
 
 
 def test_harness_audit_scorecard():
@@ -448,16 +449,141 @@ def test_harness_fails_unbackchecked_and_conflicting_kegg():
         assert by["id_backcheck"]["level"] == "fail"       # bridged and never back-checked
 
         # now the back-check runs and comes back 'conflict' — keeping the id is a failure
+        from metabo_idmapper import flags
         s = Session(d)
         s.entries["M0000"]["decisions"].append(
             {"action": "backcheck", "db": "kegg", "id": "C05472", "verdict": "conflict",
              "db_names": ["Urocortisol"], "rationale": "back-check"})
-        s.entries["M0000"].setdefault("_flags", []).append("id_name_conflict")
+        flags.raise_flag(s.entries["M0000"], "id_name_conflict",
+                         "C05472 resolves to Urocortisol", "id_name_check")
         s.save()
         by = {c["check"]: c for c in harness.audit(d)["checks"]}
         assert by["id_backcheck"]["level"] == "pass"
         assert by["id_name_conflicts"]["level"] == "fail"
-        assert any("C05472" in o for o in by["id_name_conflicts"]["offenders"])
+        assert any("M0000" in o for o in by["id_name_conflicts"]["offenders"])
+
+        # accepting a different id resolves it — the flag closes itself, nothing to clean up
+        s = Session(d)
+        s.entries["M0000"]["candidates"].append({"source": "kegg-search", "kegg": "C05465"})
+        s.save()
+        tools.record_decision(d, "M0000", rationale="C05465 is the bile acid; C05472 was a "
+                                                    "cortisol metabolite",
+                              accepted={"kegg": "C05465"}, confidence="M2")
+        by = {c["check"]: c for c in harness.audit(d)["checks"]}
+        assert by["id_name_conflicts"]["level"] == "pass"
+        assert flags.open_flags(Session(d).entries["M0000"], Session(d)) == []
+
+
+def test_ledger_refuses_to_overwrite_a_concurrent_write():
+    """The ledger is a whole-file snapshot: a second writer would silently drop the first
+    writer's decisions, which is the one way this design can lose data."""
+    from metabo_idmapper.state import LedgerConflict, Session
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["Taurine", "Glucose"])
+        a = Session(d)                      # two tool calls hold the ledger at once
+        b = Session(d)
+        b.entries["M0000"]["origin"] = "endogenous"
+        b.save()                            # b commits first
+        a.entries["M0001"]["origin"] = "endogenous"
+        try:
+            a.save()
+            raise AssertionError("stale session overwrote a newer ledger")
+        except LedgerConflict as ex:
+            assert "changed since it was read" in str(ex)
+        # b's write survived, a's was refused rather than silently applied
+        assert Session(d).entries["M0000"]["origin"] == "endogenous"
+        assert Session(d).entries["M0001"]["origin"] is None
+        # tools surface it as a structured result, not an exception
+        from metabo_idmapper.tools import REGISTRY
+        record = next(f for f in REGISTRY if f.__name__ == "record_decision")
+        s = Session(d)
+        s.entries["M0000"]["candidates"].append({"source": "x", "kegg": "C00245"})
+        s.save()
+        stale = Session(d)
+        Session(d).save()                   # someone else writes again
+        import metabo_idmapper.tools as T
+        orig = T.Session
+        T.Session = lambda wd: stale        # force the tool onto the stale snapshot
+        try:
+            out = record(d, "M0000", rationale="test", accepted={"kegg": "C00245"})
+        finally:
+            T.Session = orig
+        assert out["error_code"] == "ledger_conflict" and out["wrote_nothing"] is True
+
+
+def test_migration_repairs_v1_ledger():
+    """A v1 ledger carries bare flag strings and model accessions broken by the old
+    base-id rule ('tdchola_c' -> 'tdchola_'). Loading migrates in memory; saving persists it."""
+    import json as _json
+    from metabo_idmapper.state import LEDGER_SCHEMA, Session
+    with tempfile.TemporaryDirectory() as d:
+        legacy = {"created": "2026-01-01T00:00:00", "entries": {"M0000": {
+            "feature_id": "M0000", "original_name": "Taurochenodeoxycholic acid",
+            "normalized": {"normalized": "Taurochenodeoxycholic acid", "flags": []},
+            "candidates": [{"source": "metaboanalyst", "kegg": "C05465"}],
+            "accepted": {"kegg": "C05465"}, "final_class": "KEGG-mapped", "confidence": "M1",
+            "origin": "endogenous", "gem_mam": ["tdchola_", "ak2lgchol_hs_"],
+            "gem_cause": None, "decisions": [], "_flags": ["auto_accept_review"]}}}
+        (pathlib_Path(d) / "midmap_ledger.json").write_text(_json.dumps(legacy))
+
+        s = Session(d)
+        assert s.data["schema_version"] == LEDGER_SCHEMA
+        e = s.entries["M0000"]
+        assert e["gem_mam"] == ["tdchola", "ak2lgchol_hs"]      # dangling separator repaired
+        assert "_flags" not in e and "auto_accept_review" in e["flags"]
+        step = s.migrations[0]
+        assert step["schema"] == "1->2" and len(step["model_ids_repaired"]) == 2
+        # in-memory only until something writes
+        assert "schema_version" not in _json.loads(
+            (pathlib_Path(d) / "midmap_ledger.json").read_text())
+        s.save()
+        on_disk = _json.loads((pathlib_Path(d) / "midmap_ledger.json").read_text())
+        assert on_disk["schema_version"] == LEDGER_SCHEMA
+        assert on_disk["migrations"][0]["model_ids_repaired"][0]["to"] == "tdchola"
+        assert Session(d).migrations == []                      # already current
+
+
+def test_flags_are_derived_and_acknowledgeable():
+    from metabo_idmapper import flags
+    from metabo_idmapper.state import Session
+    with tempfile.TemporaryDirectory() as d:
+        tools.ingest_names(d, names=["LysoPC(16:0)", "LysoPC(18:2)"])
+        s = Session(d)
+        for fid in ("M0000", "M0001"):
+            e = s.entries[fid]
+            e["candidates"].append({"source": "metaboanalyst", "kegg": "C04230"})
+            e["decisions"].append({"action": "backcheck", "db": "kegg", "id": "C04230",
+                                   "verdict": "class-level", "db_resolution": "class",
+                                   "db_names": ["1-Acyl-sn-glycero-3-phosphocholine"],
+                                   "rationale": "back-check"})
+            flags.raise_flag(e, "class_level_id", "C04230 is a class entry", "id_name_check")
+        s.save()
+        for fid in ("M0000", "M0001"):
+            tools.record_decision(d, fid, rationale="KEGG only has the class entry",
+                                  accepted={"kegg": "C04230"}, confidence="M1")
+
+        st = tools.detect_state(d)
+        assert st["flags"]["open"]["class_level_id"] == 2
+        # an unresolvable-by-fixing flag: acknowledge it with a reason, and it is REPORTED
+        short = tools.acknowledge_flag(d, "M0000", "class_level_id", "n/a")
+        assert "error" in short                                  # a reason is required
+        ok = tools.acknowledge_flag(d, "M0000", "class_level_id",
+                                    "KEGG has no species-level lyso-PC entry; reported as "
+                                    "class-level in the marker table")
+        assert ok["acknowledged"] and ok["open_now"] == []
+        st = tools.detect_state(d)
+        assert st["flags"]["open"]["class_level_id"] == 1
+        assert st["flags"]["acknowledged"]["class_level_id"] == 1
+
+        # a flag whose condition is fixed disappears WITHOUT being acknowledged
+        s = Session(d)
+        s.entries["M0001"]["candidates"].append({"source": "kegg-search", "kegg": "C04100"})
+        s.save()
+        tools.record_decision(d, "M0001", rationale="species-level id found",
+                              accepted={"kegg": "C04100"}, confidence="M2")
+        st = tools.detect_state(d)
+        assert "class_level_id" not in st["flags"]["open"]
+        assert st["flags"]["self_resolved"]["class_level_id"] == 1
 
 
 def test_export_code_is_raw_api_and_compiles():

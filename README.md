@@ -16,11 +16,11 @@ refuses any accepted ID that no tool produced.
 |---|---|
 | normalize names; exact DB match; PubChem/KEGG/ChEBI search; BridgeDb xref; molmass formula/mass verify; m/z→mass windows; **ID→own-DB-record back-check**; **isomer/class token comparison**; **shared-ID detection**; GEM xref crosswalk + **model name/formula/mass search**; coverage | is a fuzzy/typo/synonym candidate correct? abbreviation expansion? endogenous vs **xenobiotic**? which isomer, when the names disagree? is a class-level ID acceptable here? is a model species the compound, a class proxy, a surrogate, or genuinely absent? confidence tier; final inclusion |
 
-## Tools (25)
+## Tools (26)
 
 `midmap_guidance` · `detect_state` · `ingest_names` · `exact_match` · `structure_lookup` ·
 `search_synonym` · `bridge_xref` · `verify_candidate` · `mass_match_candidates` ·
-**`id_name_check`** · **`isomer_guard`** · **`collision_check`** ·
+**`id_name_check`** · **`isomer_guard`** · **`collision_check`** · **`acknowledge_flag`** ·
 `screen_exogenous` · `record_decision` · `backfill_hmdb` · `gem_crosswalk` ·
 **`gem_search`** · **`gem_assign`** ·
 `mapping_provenance` · `annotate_source` · `plot_coverage` · `export_code` ·
@@ -97,6 +97,33 @@ auto-suggests the origin); the biological-exogenous call (drug / diet / gut-micr
 is a reasoning-layer judgement. A drug or dietary metabolite is tagged `exogenous` and **kept** —
 never dumped into the excluded bucket. The `harness_audit` `origin_coherence` check fails any
 entry whose origin and class disagree (e.g. `origin='drug'` with `xenobiotic-excluded`).
+
+### Ledger contract and review flags
+
+The ledger (`midmap_ledger.json`) is the run's single source of truth and every tool call
+**replaces the whole file**. So a call that finds the file changed since it read it refuses to
+write and returns `error_code: "ledger_conflict"` with `wrote_nothing: true` — two interleaved
+calls on one workdir would otherwise silently drop whichever decisions were recorded first.
+The file carries a `schema_version`; an older ledger is migrated when loaded (persisted by the
+next write) and the migration is reported, including **model accessions repaired** from an
+earlier base-id bug (`tdchola_` → `tdchola`).
+
+Review flags are **derived, not stored as stale strings**. Each flag has an append-only record
+of when and why it was raised, plus a predicate that decides whether it is still true — so
+fixing the underlying problem closes the flag by itself and the audit reads *state* rather than
+replaying decision history. `detect_state.flags` splits them three ways:
+
+| | meaning |
+|---|---|
+| `open` | still true right now — each carries what resolves it |
+| `self_resolved` | raised earlier, no longer the case (nothing to do) |
+| `acknowledged` | real but not fixable, deliberately accepted via `acknowledge_flag` **with a recorded reason** — reported, never silently dropped |
+
+`action` flags (`id_name_conflict`, `shared_id_collision`, `auto_accept_review`,
+`isomer_token_conflict`, `hmdb_backfill_conflict`, `id_gap_try_generic_kegg`) must all be
+resolved or acknowledged before a run is finished. `info` flags (`class_level_id`,
+`possible_xenobiotic`) are properties to carry into the report — e.g. the nine class-level KEGG
+ids in the verified run.
 
 ### Governance harness (`harness_audit`)
 A **read-only** self-audit — the metabo-idmapper counterpart to a run harness — that makes no
