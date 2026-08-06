@@ -53,12 +53,30 @@ def kegg_entries(ids: list[str]) -> dict[str, dict]:
     return out
 
 
+# OLS4 keeps the structural facts under `annotation`, and the formula key is NOT "formula" —
+# reading the obvious name returned None for every ChEBI id, so the formula cross-check on that
+# route quietly compared nothing at all.
+_CHEBI_FORMULA_KEYS = ("generalized_empirical_formula", "formula", "Formula")
+
+
+def _anno(term: dict, *keys):
+    anno = term.get("annotation") or {}
+    for k in keys:
+        v = anno.get(k)
+        if isinstance(v, list):
+            v = v[0] if v else None
+        if v:
+            return str(v)
+    return None
+
+
 def chebi_entry(chebi_id: str) -> dict:
-    """ChEBI id -> {found, names[], formula, source} via OLS4 term lookup."""
+    """ChEBI id -> {found, names[], formula, mono_mass, inchikey} via OLS4 term lookup."""
     cid = str(chebi_id).strip()
     if not cid.upper().startswith("CHEBI:"):
         cid = f"CHEBI:{cid}"
-    out = {"found": False, "names": [], "formula": None, "source": "chebi-ols4-term"}
+    out = {"found": False, "names": [], "formula": None, "mono_mass": None,
+           "inchikey": None, "source": "chebi-ols4-term"}
     try:
         r = requests.get("https://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms",
                          params={"obo_id": cid}, headers=_HEADERS, timeout=30)
@@ -70,11 +88,12 @@ def chebi_entry(chebi_id: str) -> dict:
     if not terms:
         return out
     t = terms[0]
-    anno = t.get("annotation", {}) or {}
-    formula = (anno.get("formula") or anno.get("Formula") or [None])
     names = [t.get("label")] + list(t.get("synonyms") or [])
+    mass = _anno(t, "monoisotopic_mass", "mass")
     out.update(found=True, names=[n for n in names if n],
-               formula=formula[0] if isinstance(formula, list) else formula)
+               formula=_anno(t, *_CHEBI_FORMULA_KEYS),
+               mono_mass=float(mass) if mass else None,
+               inchikey=_anno(t, "inchi_key_string", "inchikey"))
     return out
 
 

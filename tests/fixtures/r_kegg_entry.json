@@ -1,0 +1,46 @@
+[
+ {
+  "kegg": "C05472",
+  "found": true,
+  "names": [
+   "Urocortisol",
+   "Tetrahydrocortisol",
+   "5beta-Pregnane-3alpha,11beta,17alpha,21-tetrol-20-one"
+  ],
+  "formula": "C21H34O5",
+  "exact_mass": 366.2406,
+  "mol_weight": 366.49,
+  "chebi": "28320",
+  "pubchem": "7832",
+  "lipidmaps": "LMST02030143"
+ },
+ {
+  "kegg": "C04230",
+  "found": true,
+  "names": [
+   "1-Acyl-sn-glycero-3-phosphocholine",
+   "1-Acyl-sn-glycerol-3-phosphocholine",
+   "alpha-Acylglycerophosphocholine",
+   "2-Lysolecithin",
+   "2-Lysophosphatidylcholine",
+   "1-Acylglycerophosphocholine"
+  ],
+  "formula": "C9H20NO7PR",
+  "exact_mass": null,
+  "mol_weight": null,
+  "chebi": "17504 183975",
+  "pubchem": "6900",
+  "lipidmaps": null
+ },
+ {
+  "kegg": "C99999",
+  "found": false,
+  "names": [],
+  "formula": null,
+  "exact_mass": null,
+  "mol_weight": null,
+  "chebi": null,
+  "pubchem": null,
+  "lipidmaps": null
+ }
+]

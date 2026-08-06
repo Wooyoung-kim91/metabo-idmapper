@@ -176,7 +176,10 @@ def features(name: str) -> dict:
     low = _norm(name)
     skeleton = _matched(low, _SKELETONS)
     ether = _matched(low, _ETHER)
-    chains = {f"{a}:{b}" for a, b in _CHAIN_RE.findall(low)}
+    # "0:0" is an EMPTY position in lyso shorthand, not a chain: LysoPC(16:0) and the stricter
+    # LysoPC(16:0/0:0) are the same compound, and reading 0:0 as a second chain made an exact
+    # match look like a partial one.
+    chains = {f"{a}:{b}" for a, b in _CHAIN_RE.findall(low) if f"{a}:{b}" != "0:0"}
     omega = None
     dbpos: set[int] = set()
 

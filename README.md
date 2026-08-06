@@ -43,7 +43,7 @@ IDs, or by formula/mass, because the alternatives are formula-identical isomers:
 
 | what happened | what catches it |
 |---|---|
-| a taurochenodeoxycholate entry carrying KEGG `C05472`, whose own KEGG name is **"Urocortisol"** (a cortisol metabolite) — a wrong BridgeDb link | `id_name_check`: ID → its own DB record → compare names |
+| a taurochenodeoxycholate entry carrying KEGG `C05472`, whose own KEGG name is **"Urocortisol"** (a cortisol metabolite) — and it comes from upstream: MetaboAnalyst's own *exact* match returns it | `id_name_check`: ID → its own DB record → compare names |
 | two different glycolipids (Lc3Cer, nLc4Cer) sharing one PubChem/HMDB entry, which **collapses the ratio between them to exactly 1** | `collision_check` |
 | a plasmenyl (vinyl-ether) `LysoPC(P-16:0)` carrying the **1-acyl class** ID | `isomer_guard` / `id_name_check` (`ether_linkage`) |
 | a **neolacto** (β1-4) glycan carrying the **lacto** (β1-3) isomer | `isomer_guard` (`glycan_series`, from KEGG's own linkage wording) |
@@ -238,8 +238,18 @@ claude mcp add metabo-idmapper -- /home/wykim/miniforge3/envs/cobragem/bin/pytho
 ## Test
 
 ```bash
-/home/wykim/miniforge3/envs/cobragem/bin/python -m pytest -q   # 7 offline smoke tests
+/home/wykim/miniforge3/envs/cobragem/bin/python -m pytest -q   # 47 offline tests
 ```
+
+`tests/test_smoke.py` covers the pure-Python core, the ledger contract and the governance
+harness. `tests/test_parsers.py` pins the **R and REST boundary** against responses recorded
+from the real engines into `tests/fixtures/` (KEGGREST keggGet/keggFind, MetaboAnalystR,
+BridgeDbR, PubChem PUG-REST, ChEBI OLS4), so a changed column name or wrapper key breaks a
+test instead of a live run. Recording those fixtures found three real defects, each now
+pinned: MetaboAnalystR's injected anchors were dropping a caller's own **Taurine / glutamate /
+glucose** rows; a BridgeDb answer with several distinct accessions was silently reduced to its
+first element; and the ChEBI back-check read `annotation.formula`, which OLS4 calls
+`generalized_empirical_formula` — so that formula cross-check had always compared nothing.
 
 Live end-to-end control (Taurine): `structure_lookup` → PubChem CID 1123 / `C2H7NO3S`;
 `bridge_xref` InChIKey → KEGG `C00245`, HMDB, ChEBI; `gem_crosswalk` → Mouse-GEM MAM.

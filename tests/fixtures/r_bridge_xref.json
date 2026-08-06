@@ -1,0 +1,33 @@
+[
+ {
+  "id": "XOAAWQZATWQOTB-UHFFFAOYSA-N",
+  "source": "InChIKey",
+  "mappings": {
+   "KEGG Compound": [
+    "C00245"
+   ],
+   "HMDB": [
+    "HMDB00251",
+    "HMDB0000251"
+   ],
+   "ChEBI": [
+    "507393",
+    "CHEBI:507393",
+    "CHEBI:15891",
+    "15891"
+   ]
+  }
+ },
+ {
+  "id": "C05465",
+  "source": "KEGG Compound",
+  "mappings": {
+   "HMDB": [
+    "HMDB00949",
+    "HMDB0000951",
+    "HMDB00951",
+    "HMDB0000949"
+   ]
+  }
+ }
+]

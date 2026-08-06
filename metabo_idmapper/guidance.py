@@ -214,8 +214,14 @@ polyamine backbone (spermine vs spermidine). Formula and mass are BLIND to all o
 - keggFind substring hits are noisy: always verify_candidate before accepting.
 - PubChem REST rate-limits: calls are throttled; large batches take time.
 - keggGet accepts at most 10 ids per request; id_name_check batches for you.
-- A BridgeDb release can carry a wrong link (2021-01 links KEGG C05472 to
-  taurochenodeoxycholate's HMDB). Bridged ids are leads, not identities.
+- The wrong id for taurochenodeoxycholate comes from UPSTREAM, not from a bad search:
+  MetaboAnalyst's own exact match returns C05472 (whose KEGG name is "Urocortisol"), and the
+  2021-01 BridgeDb links C05472 to taurochenodeoxycholate's HMDB. An M1 "exact" match is
+  therefore not a guarantee — back-check the bile-acid / steroid family in particular.
+- One id can bridge to SEVERAL DISTINCT ids in a target system (KEGG C05465 -> HMDB0000949 and
+  HMDB0000951). bridge_xref normalizes spelling variants away (HMDB00251 = HMDB0000251,
+  CHEBI:15891 = 15891) and lists what remains under `ambiguous`; backfill_hmdb refuses to pick
+  one of them for you. Which is right is evidence, not order.
 - PubChem sometimes merges two compounds into one entry as synonyms (Lc3Cer and nLc4Cer on
   CID 131770449) — which is how two entries end up sharing an id. collision_check finds it.
 - A DB entry's own synonym list can be internally inconsistent: KEGG C04910 lists BOTH

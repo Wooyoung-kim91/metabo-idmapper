@@ -13,8 +13,11 @@ workdir <- if (is.null(req$workdir)) file.path(tempdir(), "ma_work") else req$wo
 dir.create(workdir, showWarnings = FALSE, recursive = TRUE)
 # Robustness: if NONE of the queried names match, MetaboAnalystR's CrossReferencing hits an
 # all-fail branch and dies ("object 'current.msg' not found"). Inject guaranteed-match anchors
-# so it always proceeds; anchor rows are dropped from the output below.
+# so it always proceeds. Only the anchors WE added are dropped below: taurine, glutamate and
+# glucose are ordinary metabolites, and dropping them whenever a caller happens to ask for one
+# silently returned no mapping for three of the most common compounds there are.
 ANCHORS <- c("Taurine", "L-Glutamic acid", "D-Glucose")
+INJECTED <- setdiff(ANCHORS, cmpds)
 uniq <- unique(c(ANCHORS, cmpds))
 
 old <- getwd(); on.exit(setwd(old), add = TRUE)
@@ -31,7 +34,7 @@ col <- function(df, n) if (n %in% colnames(df)) df[[n]] else rep(NA, nrow(df))
 
 rows <- lapply(seq_len(nrow(res)), function(i) {
   q <- as.character(col(res, "Query")[i])
-  if (q %in% ANCHORS) return(NULL)   # drop injected anchors
+  if (q %in% INJECTED) return(NULL)   # drop only anchors the caller did not ask for
   list(
     query   = q,
     match   = as.character(col(res, "Match")[i]),

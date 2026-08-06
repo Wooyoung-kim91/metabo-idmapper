@@ -326,6 +326,29 @@ def search_synonym(workdir: str, feature_id: str, queries: list[str] | None = No
                     "verify_candidate (formula/mass) and id_name_check before record_decision."}
 
 
+def _canon_ids(db: str, values) -> list[str]:
+    """Normalize a bridged id list and drop spelling duplicates, preserving order.
+
+    BridgeDb answers in every spelling it knows: HMDB as HMDB00251 AND HMDB0000251, ChEBI as
+    15891, CHEBI:15891 and the anion's 507393. Comparing those raw makes one accession look
+    like several — and hides the case that matters, where a single id really does bridge to
+    two DIFFERENT compounds.
+    """
+    vals = [values] if isinstance(values, str) else list(values or [])
+    out: list[str] = []
+    for v in vals:
+        v = str(v).strip()
+        if not v:
+            continue
+        if db == "hmdb":
+            v = _lex.pad_hmdb(v)
+        elif db == "chebi":
+            v = v if v.upper().startswith("CHEBI:") else f"CHEBI:{v}"
+        if v not in out:
+            out.append(v)
+    return out
+
+
 def bridge_xref(workdir: str | None, queries: list[dict], db: str | None = None) -> dict:
     """Promote ids across systems via BridgeDb (batch; DB loads once).
 
@@ -353,19 +376,29 @@ def bridge_xref(workdir: str | None, queries: list[dict], db: str | None = None)
     out = []
     s = Session(workdir) if workdir else None
     for q, res in zip(queries, r["result"]):
-        mp = {inv.get(t, t): v for t, v in res.get("mappings", {}).items()}
+        mp = {}
+        for target, vals in (res.get("mappings") or {}).items():
+            key = inv.get(target, target)
+            mp[key] = _canon_ids(key, vals)
+        ambiguous = {k: v for k, v in mp.items() if len(v) > 1}
         out.append({"feature_id": q.get("feature_id"), "id": q["id"],
-                    "source": q["source"], "mappings": mp})
+                    "source": q["source"], "mappings": mp, "ambiguous": ambiguous})
         if s and q.get("feature_id") in (s.entries if s else {}):
             cand = {"source": "bridgedb", "query": f"{q['source']}:{q['id']}"}
-            for k in ("kegg", "hmdb", "chebi", "pubchem", "inchikey"):
-                if mp.get(k):
-                    v = mp[k][0] if isinstance(mp[k], list) else mp[k]
-                    cand[k] = _lex.pad_hmdb(v) if k == "hmdb" else v
+            for k, vals in mp.items():
+                if vals:
+                    cand[k] = vals[0]
+            if ambiguous:
+                cand["ambiguous"] = ambiguous
             s.add_candidate(q["feature_id"], cand)
     if s:
         s.save()
-    return {"results": out, "db": db}
+    return {"results": out, "db": db,
+            "note": "one id can bridge to SEVERAL distinct ids in a target system (KEGG C05465 "
+                    "-> HMDB0000949 and HMDB0000951). Those are listed under `ambiguous` after "
+                    "spelling variants are normalized away — the first is offered as the "
+                    "candidate, but which one is right is a judgement, so check `ambiguous` "
+                    "before accepting."}
 
 
 def verify_candidate(proposed_formula: str | None = None,
@@ -1268,6 +1301,20 @@ def backfill_hmdb(workdir: str, db: str | None = None) -> dict:
     gained, skipped_conflicts = [], []
     for fid, _ in targets:
         e = s.get(fid)
+        # A bridge that answered with SEVERAL distinct accessions has not identified anything:
+        # picking the first would be a coin flip recorded as a fact (KEGG C05465 bridges to
+        # both HMDB0000949 and HMDB0000951). Leave it for the reasoning layer.
+        ambiguous = [c for c in e["candidates"]
+                     if c.get("hmdb") and (c.get("ambiguous") or {}).get("hmdb")]
+        if ambiguous:
+            alts = ambiguous[0]["ambiguous"]["hmdb"]
+            skipped_conflicts.append({
+                "feature_id": fid, "name": e["original_name"], "candidates": alts,
+                "reason": f"the bridge returned {len(alts)} distinct HMDB accessions for this "
+                          "compound — choose one on evidence, do not take the first"})
+            _flags.raise_flag(e, "hmdb_backfill_conflict",
+                              f"bridge returned {alts}", "backfill_hmdb")
+            continue
         hmdbs = [c["hmdb"] for c in e["candidates"] if c.get("hmdb")]
         free = [h for h in hmdbs if taken.get(str(h), fid) == fid]
         if hmdbs and not free:

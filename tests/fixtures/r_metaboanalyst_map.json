@@ -1,0 +1,32 @@
+[
+ {
+  "query": "Taurine",
+  "match": "Taurine",
+  "kegg": "C00245",
+  "hmdb": "HMDB0000251",
+  "pubchem": "1123",
+  "chebi": null,
+  "smiles": "NCCS(O)(=O)=O",
+  "status": "matched"
+ },
+ {
+  "query": "LysoPC(16:0)",
+  "match": "LysoPC(16:0/0:0)",
+  "kegg": "C04230",
+  "hmdb": "HMDB0010382",
+  "pubchem": "460602",
+  "chebi": null,
+  "smiles": "CCCCCCCCCCCCCCCC(=O)OC[C@@H](O)COP([O-])(=O)OCC[N+](C)(C)C",
+  "status": "matched"
+ },
+ {
+  "query": "NotARealCompound",
+  "match": "NA",
+  "kegg": "NA",
+  "hmdb": "NA",
+  "pubchem": "NA",
+  "chebi": null,
+  "smiles": "NA",
+  "status": "no_match"
+ }
+]

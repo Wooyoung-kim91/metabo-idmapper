@@ -1,0 +1,636 @@
+{
+ "_embedded": {
+  "terms": [
+   {
+    "iri": "http://purl.obolibrary.org/obo/CHEBI_15891",
+    "lang": "en",
+    "description": [
+     "An amino sulfonic acid that is the 2-amino derivative of ethanesulfonic acid. It is a naturally occurring amino acid derived from  methionine and cysteine metabolism. An abundant component of fish- and meat-based foods, it has been used as an oral supplement in the treatment of disorders such as cystic fibrosis and hypertension."
+    ],
+    "synonyms": [
+     "2-Aminoethanesulfonic acid",
+     "2-Aminoethanesulfonic acid",
+     "2-aminoethanesulfonic acid",
+     "2-aminoethanesulfonic acid",
+     "2-aminoethyl sulfonate",
+     "Aminoethylsulfonic acid",
+     "Taurine",
+     "beta-aminoethylsulfonic acid"
+    ],
+    "annotation": {
+     "charge": [
+      0.0
+     ],
+     "database_cross_reference": [
+      "cas:107-35-7",
+      "drugbank:DB01956",
+      "drugcentral:4486",
+      "gmelin:82121",
+      "hmdb:HMDB0000251",
+      "kegg.compound:C00245",
+      "kegg.drug:D00047",
+      "knapsack:C00048188",
+      "metacyc.compound:TAURINE",
+      "pdb-ccd:TAU",
+      "pubmed:10098958",
+      "pubmed:10325611",
+      "pubmed:10349454",
+      "pubmed:10827156",
+      "pubmed:11162030",
+      "pubmed:11842876",
+      "pubmed:11918831",
+      "pubmed:11931837",
+      "pubmed:12297216",
+      "pubmed:12499349",
+      "pubmed:12834252",
+      "pubmed:14992292",
+      "pubmed:15503229",
+      "pubmed:15780050",
+      "pubmed:15911239",
+      "pubmed:16169526",
+      "pubmed:16444816",
+      "pubmed:16923232",
+      "pubmed:17053427",
+      "pubmed:17081118",
+      "pubmed:17875433",
+      "pubmed:17997039",
+      "pubmed:18060526",
+      "pubmed:18171928",
+      "pubmed:19074966",
+      "pubmed:19212411",
+      "pubmed:19309105",
+      "pubmed:19940987",
+      "pubmed:2122710",
+      "pubmed:21761941",
+      "pubmed:22770225",
+      "pubmed:2370482",
+      "pubmed:24027187",
+      "pubmed:2494044",
+      "pubmed:27291853",
+      "pubmed:27334436",
+      "pubmed:27345710",
+      "pubmed:27380030",
+      "pubmed:27412799",
+      "pubmed:27471162",
+      "pubmed:27535560",
+      "pubmed:3106924",
+      "pubmed:3393260",
+      "pubmed:6198473",
+      "pubmed:7588651",
+      "pubmed:8692051",
+      "pubmed:8818047",
+      "pubmed:9635063",
+      "reaxys:1751215",
+      "wikipedia.en:Taurine"
+     ],
+     "generalized_empirical_formula": [
+      "C2H7NO3S"
+     ],
+     "has_alternative_id": [
+      "CHEBI:15195",
+      "CHEBI:26852",
+      "CHEBI:45877",
+      "CHEBI:9406"
+     ],
+     "has_obo_namespace": [
+      "chebi_ontology"
+     ],
+     "id": [
+      "CHEBI:15891"
+     ],
+     "inchi_key_string": [
+      "XOAAWQZATWQOTB-UHFFFAOYSA-N"
+     ],
+     "inchi_string": [
+      "InChI=1S/C2H7NO3S/c3-1-2-7(4,5)6/h1-3H2,(H,4,5,6)"
+     ],
+     "mass": [
+      "125.149"
+     ],
+     "monoisotopic_mass": [
+      "125.01466"
+     ],
+     "smiles_string": [
+      "NCCS(=O)(=O)O"
+     ]
+    },
+    "label": "taurine",
+    "ontology_name": "chebi",
+    "ontology_prefix": "CHEBI",
+    "ontology_iri": "http://purl.obolibrary.org/obo/chebi.owl",
+    "is_obsolete": false,
+    "term_replaced_by": null,
+    "is_defining_ontology": true,
+    "has_children": false,
+    "is_root": false,
+    "short_form": "CHEBI_15891",
+    "obo_id": "CHEBI:15891",
+    "in_subset": [
+     "3_STAR"
+    ],
+    "obo_definition_citation": null,
+    "obo_xref": [
+     {
+      "database": "cas",
+      "id": "107-35-7",
+      "description": "cas",
+      "url": "https://commonchemistry.cas.org/detail?cas_rn=107-35-7"
+     },
+     {
+      "database": "drugbank",
+      "id": "DB01956",
+      "description": "drugbank",
+      "url": "https://go.drugbank.com/drugs/DB01956"
+     },
+     {
+      "database": "drugcentral",
+      "id": "4486",
+      "description": "drugcentral",
+      "url": "http://drugcentral.org/drugcard/4486"
+     },
+     {
+      "database": "gmelin",
+      "id": "82121",
+      "description": "gmelin",
+      "url": null
+     },
+     {
+      "database": "hmdb",
+      "id": "HMDB0000251",
+      "description": "hmdb",
+      "url": "http://www.hmdb.ca/metabolites/HMDB0000251"
+     },
+     {
+      "database": "kegg.compound",
+      "id": "C00245",
+      "description": "kegg.compound",
+      "url": null
+     },
+     {
+      "database": "kegg.drug",
+      "id": "D00047",
+      "description": "kegg.drug",
+      "url": null
+     },
+     {
+      "database": "knapsack",
+      "id": "C00048188",
+      "description": "knapsack",
+      "url": "http://www.knapsackfamily.com/knapsack_core/information.php?word=C00048188"
+     },
+     {
+      "database": "metacyc.compound",
+      "id": "TAURINE",
+      "description": "metacyc.compound",
+      "url": null
+     },
+     {
+      "database": "pdb-ccd",
+      "id": "TAU",
+      "description": "pdb-ccd",
+      "url": null
+     },
+     {
+      "database": "pubmed",
+      "id": "10098958",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/10098958/"
+     },
+     {
+      "database": "pubmed",
+      "id": "10325611",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/10325611/"
+     },
+     {
+      "database": "pubmed",
+      "id": "10349454",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/10349454/"
+     },
+     {
+      "database": "pubmed",
+      "id": "10827156",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/10827156/"
+     },
+     {
+      "database": "pubmed",
+      "id": "11162030",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/11162030/"
+     },
+     {
+      "database": "pubmed",
+      "id": "11842876",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/11842876/"
+     },
+     {
+      "database": "pubmed",
+      "id": "11918831",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/11918831/"
+     },
+     {
+      "database": "pubmed",
+      "id": "11931837",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/11931837/"
+     },
+     {
+      "database": "pubmed",
+      "id": "12297216",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/12297216/"
+     },
+     {
+      "database": "pubmed",
+      "id": "12499349",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/12499349/"
+     },
+     {
+      "database": "pubmed",
+      "id": "12834252",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/12834252/"
+     },
+     {
+      "database": "pubmed",
+      "id": "14992292",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/14992292/"
+     },
+     {
+      "database": "pubmed",
+      "id": "15503229",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/15503229/"
+     },
+     {
+      "database": "pubmed",
+      "id": "15780050",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/15780050/"
+     },
+     {
+      "database": "pubmed",
+      "id": "15911239",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/15911239/"
+     },
+     {
+      "database": "pubmed",
+      "id": "16169526",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/16169526/"
+     },
+     {
+      "database": "pubmed",
+      "id": "16444816",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/16444816/"
+     },
+     {
+      "database": "pubmed",
+      "id": "16923232",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/16923232/"
+     },
+     {
+      "database": "pubmed",
+      "id": "17053427",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/17053427/"
+     },
+     {
+      "database": "pubmed",
+      "id": "17081118",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/17081118/"
+     },
+     {
+      "database": "pubmed",
+      "id": "17875433",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/17875433/"
+     },
+     {
+      "database": "pubmed",
+      "id": "17997039",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/17997039/"
+     },
+     {
+      "database": "pubmed",
+      "id": "18060526",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/18060526/"
+     },
+     {
+      "database": "pubmed",
+      "id": "18171928",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/18171928/"
+     },
+     {
+      "database": "pubmed",
+      "id": "19074966",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/19074966/"
+     },
+     {
+      "database": "pubmed",
+      "id": "19212411",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/19212411/"
+     },
+     {
+      "database": "pubmed",
+      "id": "19309105",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/19309105/"
+     },
+     {
+      "database": "pubmed",
+      "id": "19940987",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/19940987/"
+     },
+     {
+      "database": "pubmed",
+      "id": "2122710",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/2122710/"
+     },
+     {
+      "database": "pubmed",
+      "id": "21761941",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/21761941/"
+     },
+     {
+      "database": "pubmed",
+      "id": "22770225",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/22770225/"
+     },
+     {
+      "database": "pubmed",
+      "id": "2370482",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/2370482/"
+     },
+     {
+      "database": "pubmed",
+      "id": "24027187",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/24027187/"
+     },
+     {
+      "database": "pubmed",
+      "id": "2494044",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/2494044/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27291853",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27291853/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27334436",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27334436/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27345710",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27345710/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27380030",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27380030/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27412799",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27412799/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27471162",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27471162/"
+     },
+     {
+      "database": "pubmed",
+      "id": "27535560",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/27535560/"
+     },
+     {
+      "database": "pubmed",
+      "id": "3106924",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/3106924/"
+     },
+     {
+      "database": "pubmed",
+      "id": "3393260",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/3393260/"
+     },
+     {
+      "database": "pubmed",
+      "id": "6198473",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/6198473/"
+     },
+     {
+      "database": "pubmed",
+      "id": "7588651",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/7588651/"
+     },
+     {
+      "database": "pubmed",
+      "id": "8692051",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/8692051/"
+     },
+     {
+      "database": "pubmed",
+      "id": "8818047",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/8818047/"
+     },
+     {
+      "database": "pubmed",
+      "id": "9635063",
+      "description": "pubmed",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/9635063/"
+     },
+     {
+      "database": "reaxys",
+      "id": "1751215",
+      "description": "reaxys",
+      "url": null
+     },
+     {
+      "database": "wikipedia.en",
+      "id": "Taurine",
+      "description": "wikipedia.en",
+      "url": null
+     }
+    ],
+    "obo_synonym": [
+     {
+      "name": "2-Aminoethanesulfonic acid",
+      "scope": "hasExactSynonym",
+      "type": null,
+      "xrefs": [
+       {
+        "database": null,
+        "id": "KEGG_COMPOUND",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "2-aminoethanesulfonic acid",
+      "scope": "hasExactSynonym",
+      "type": "IUPAC NAME",
+      "xrefs": [
+       {
+        "database": null,
+        "id": "IUPAC",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "2-Aminoethanesulfonic acid",
+      "scope": "hasRelatedSynonym",
+      "type": null,
+      "xrefs": [
+       {
+        "database": null,
+        "id": "kegg.compound",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "2-aminoethanesulfonic acid",
+      "scope": "hasRelatedSynonym",
+      "type": "IUPAC NAME",
+      "xrefs": [
+       {
+        "database": null,
+        "id": "iupac",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "2-aminoethyl sulfonate",
+      "scope": "hasRelatedSynonym",
+      "type": null,
+      "xrefs": [
+       {
+        "database": null,
+        "id": "iubmb",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "Aminoethylsulfonic acid",
+      "scope": "hasRelatedSynonym",
+      "type": null,
+      "xrefs": [
+       {
+        "database": null,
+        "id": "kegg.compound",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "Taurine",
+      "scope": "hasRelatedSynonym",
+      "type": null,
+      "xrefs": [
+       {
+        "database": null,
+        "id": "kegg.compound",
+        "description": null,
+        "url": null
+       }
+      ]
+     },
+     {
+      "name": "beta-aminoethylsulfonic acid",
+      "scope": "hasRelatedSynonym",
+      "type": null,
+      "xrefs": [
+       {
+        "database": null,
+        "id": "nist",
+        "description": null,
+        "url": null
+       }
+      ]
+     }
+    ],
+    "is_preferred_root": false,
+    "_links": {
+     "self": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891?lang=en"
+     },
+     "parents": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/parents"
+     },
+     "ancestors": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/ancestors"
+     },
+     "hierarchicalParents": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/hierarchicalParents"
+     },
+     "hierarchicalAncestors": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/hierarchicalAncestors"
+     },
+     "jstree": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/jstree"
+     },
+     "graph": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/graph"
+     },
+     "has_role": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FRO_0000087"
+     },
+     "is_protonated_form_of": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FRO_0018034"
+     },
+     "is_tautomer_of": {
+      "href": "http://www.ebi.ac.uk/ols4/api/ontologies/chebi/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FCHEBI_15891/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FRO_0018036"
+     }
+    }
+   }
+  ]
+ }
+}
